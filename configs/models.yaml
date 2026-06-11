@@ -1,0 +1,131 @@
+paths_config: configs/paths.yaml
+filters_config: configs/filters.yaml
+
+random_state: 42
+holdout_fraction: 0.2
+
+modeling_dataset:
+  source: color_locus
+  require_color_locus_keep: true
+
+dataset_variants:
+  - strict_photometry
+  - strict_parallax_soft
+  - strict_poe_2
+  - strict_poe_3
+  - relaxed_photometry
+  - relaxed_parallax_soft
+  - relaxed_poe_2
+  - relaxed_poe_3
+
+feature_sets:
+  colors_parallax:
+    - BP_RP
+    - G_BP
+    - G_RP
+    - J_H
+    - J_K
+    - H_K
+    - W1_W2
+    - parallax
+  colors_parallax_error:
+    - BP_RP
+    - G_BP
+    - G_RP
+    - J_H
+    - J_K
+    - H_K
+    - W1_W2
+    - parallax
+    - parallax_error
+    - parallax_over_error
+
+negative_reduction:
+  enabled: true
+  method: color_quantile_stratified
+  negative_to_wr_ratio: 10
+  quantile_bins: 4
+  columns:
+    - BP_RP
+    - G_BP
+    - G_RP
+    - J_H
+    - J_K
+    - H_K
+    - W1_W2
+
+cv:
+  n_splits: 3
+  n_repeats: 1
+
+bayes_search:
+  n_iter: 25
+  n_jobs: 1
+  scoring: average_precision
+
+selection:
+  metric: constrained_f_beta
+  beta: 1.5
+  min_precision: 0.5
+  min_balanced_accuracy: 0.5
+  max_train_cv_f2_gap: 0.15
+  max_train_cv_average_precision_gap: 0.20
+  min_holdout_cv_average_precision_ratio: 0.25
+ranking:
+  top_k: [10, 50, 100, 500, 1000]
+  fpr_levels: [0.001, 0.005, 0.01]
+
+outputs:
+  modeling_data_dir: data/processed/modeling
+  reports_dir: reports/modeling
+  figures_dir: reports/modeling/figures
+  reduced_dataset_template: "{variant}_reduced.parquet"
+  reduction_summary: reports/tables/negative_reduction_summary.csv
+  reduction_audit: reports/tables/negative_reduction_audit.csv
+  negative_pool_audit: reports/tables/negative_pool_audit.csv
+  training_results: reports/tables/model_training_results.csv
+  training_history_db: data/databases/training_history.duckdb
+  auto_sync_training_history: true
+  compact_db_backed_sidecars_after_sync: true
+  models_dir: reports/modeling/models
+  benchmark_table: reports/tables/model_benchmark.csv
+
+samplers:
+  smote:
+    type: smote
+    k_neighbors: 3
+  smote_enn:
+    type: smote_enn
+    k_neighbors: 3
+
+models:
+  random_forest:
+    estimator: random_forest
+    bayes_iter: 25
+    search_space:
+      estimator__n_estimators: {type: integer, low: 200, high: 800}
+      estimator__max_depth: {type: integer, low: 3, high: 14}
+      estimator__min_samples_leaf: {type: integer, low: 3, high: 40}
+      estimator__max_features: {type: categorical, values: [sqrt, log2, 0.5]}
+  hist_gradient_boosting:
+    estimator: hist_gradient_boosting
+    bayes_iter: 25
+    search_space:
+      estimator__learning_rate: {type: real, low: 0.005, high: 0.12, prior: log-uniform}
+      estimator__max_iter: {type: integer, low: 150, high: 900}
+      estimator__max_leaf_nodes: {type: integer, low: 7, high: 31}
+      estimator__min_samples_leaf: {type: integer, low: 20, high: 150}
+      estimator__l2_regularization: {type: real, low: 0.01, high: 100.0, prior: log-uniform}
+  xgboost:
+    estimator: xgboost
+    optional: true
+    bayes_iter: 25
+    search_space:
+      estimator__n_estimators: {type: integer, low: 200, high: 1000}
+      estimator__learning_rate: {type: real, low: 0.005, high: 0.12, prior: log-uniform}
+      estimator__max_depth: {type: integer, low: 2, high: 6}
+      estimator__min_child_weight: {type: integer, low: 3, high: 30}
+      estimator__subsample: {type: real, low: 0.55, high: 1.0}
+      estimator__colsample_bytree: {type: real, low: 0.55, high: 1.0}
+      estimator__reg_lambda: {type: real, low: 1.0, high: 100.0, prior: log-uniform}
+      estimator__reg_alpha: {type: real, low: 0.001, high: 10.0, prior: log-uniform}

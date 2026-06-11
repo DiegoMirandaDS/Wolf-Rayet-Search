@@ -1,0 +1,11 @@
+paths_config: configs/paths.yaml
+catalogs_config: configs/catalogs.yaml
+filters_config: configs/filters.yaml
+
+reference:
+  keep_only_gaia_dr3_alias: true
+
+crossmatch:
+  vizier_radius_arcsec: 5.0
+  duplicate_primary_radius_arcsec: 1.5
+  duplicate_secondary_radius_arcsec: 1.0

@@ -1,0 +1,121 @@
+paths_config: configs/paths.yaml
+
+photometry:
+  required_columns:
+    - source_id
+    - ra
+    - dec
+    - G
+    - BP
+    - RP
+    - J
+    - H
+    - Ks
+    - W1
+    - W2
+  families:
+    strict:
+      description: "Gaia, 2MASS and WISE W1/W2 photometry with A quality in every required 2MASS/WISE band."
+      twomass_allowed_qualities: ["A"]
+      wise_allowed_qualities: ["A"]
+    relaxed:
+      description: "Same required photometry as strict, accepting A or B quality in every required 2MASS/WISE band."
+      twomass_allowed_qualities: ["A", "B"]
+      wise_allowed_qualities: ["A", "B"]
+
+parallax_soft:
+  # GWRC is already a Galactic WR catalogue. Gaia parallax is kept as an
+  # astrometric-quality axis, so the broad soft subset only keeps strictly
+  # positive parallaxes instead of imposing a distance-derived floor.
+  min_parallax: 0.0
+
+parallax_over_error_variants:
+  poe_1:
+    min_parallax: 0.0
+    min_parallax_over_error: 1.0
+  poe_2:
+    min_parallax: 0.0
+    min_parallax_over_error: 2.0
+  poe_3:
+    min_parallax: 0.0
+    min_parallax_over_error: 3.0
+  poe_5:
+    min_parallax: 0.0
+    min_parallax_over_error: 5.0
+
+output_files:
+  strict_photometry: wr_reference_strict_photometry.parquet
+  strict_parallax_soft: wr_reference_strict_parallax_soft.parquet
+  strict_poe_1: wr_reference_strict_poe_1.parquet
+  strict_poe_2: wr_reference_strict_poe_2.parquet
+  strict_poe_3: wr_reference_strict_poe_3.parquet
+  strict_poe_5: wr_reference_strict_poe_5.parquet
+  relaxed_photometry: wr_reference_relaxed_photometry.parquet
+  relaxed_parallax_soft: wr_reference_relaxed_parallax_soft.parquet
+  relaxed_poe_1: wr_reference_relaxed_poe_1.parquet
+  relaxed_poe_2: wr_reference_relaxed_poe_2.parquet
+  relaxed_poe_3: wr_reference_relaxed_poe_3.parquet
+  relaxed_poe_5: wr_reference_relaxed_poe_5.parquet
+
+simbad_negative_output_files:
+  strict_photometry: simbad_negative_strict_photometry.parquet
+  strict_parallax_soft: simbad_negative_strict_parallax_soft.parquet
+  strict_poe_1: simbad_negative_strict_poe_1.parquet
+  strict_poe_2: simbad_negative_strict_poe_2.parquet
+  strict_poe_3: simbad_negative_strict_poe_3.parquet
+  strict_poe_5: simbad_negative_strict_poe_5.parquet
+  relaxed_photometry: simbad_negative_relaxed_photometry.parquet
+  relaxed_parallax_soft: simbad_negative_relaxed_parallax_soft.parquet
+  relaxed_poe_1: simbad_negative_relaxed_poe_1.parquet
+  relaxed_poe_2: simbad_negative_relaxed_poe_2.parquet
+  relaxed_poe_3: simbad_negative_relaxed_poe_3.parquet
+  relaxed_poe_5: simbad_negative_relaxed_poe_5.parquet
+
+color_locus:
+  dataset_variants:
+    - strict_photometry
+    - strict_parallax_soft
+    - strict_poe_1
+    - strict_poe_2
+    - strict_poe_3
+    - strict_poe_5
+    - relaxed_photometry
+    - relaxed_parallax_soft
+    - relaxed_poe_1
+    - relaxed_poe_2
+    - relaxed_poe_3
+    - relaxed_poe_5
+  reference_output_template: "wr_reference_{variant}_color_locus.parquet"
+  simbad_negative_output_template: "simbad_negative_{variant}_color_locus.parquet"
+  estimator: huber
+  transform: signed_log1p
+  selection_policy: all_planes
+  threshold_method: empirical_quantile
+  residual_quantile: 0.975
+  aggregate_min_outlier_planes: 2
+  min_positive_fraction: 1.0
+  residual_sigma_threshold: 2.0
+  enabled_colors:
+    gaia:
+      - G_BP
+      - G_RP
+      - BP_RP
+    twomass:
+      - J_H
+      - J_K
+      - H_K
+    wise:
+      - W1_W2
+  candidate_planes:
+    - x: G_BP
+      y: G_RP
+    - x: G_BP
+      y: BP_RP
+    - x: G_RP
+      y: BP_RP
+    - x: J_H
+      y: J_K
+    - x: J_K
+      y: H_K
+    - x: J_H
+      y: H_K

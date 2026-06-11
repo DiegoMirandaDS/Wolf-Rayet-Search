@@ -1,0 +1,15 @@
+gwrc:
+  url: "http://pacrowther.staff.shef.ac.uk/WRcat/index.php"
+  expected_version_prefix: "v1."
+
+gaia:
+  release: "gaiadr3"
+  chunk_size: 400
+
+vizier:
+  twomass_catalog: "II/246/out"
+  wise_catalog: "II/328/allwise"
+  timeout_seconds: 180
+
+simbad:
+  timeout_seconds: 180

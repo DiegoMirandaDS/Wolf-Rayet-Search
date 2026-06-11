@@ -1,0 +1,95 @@
+models_config: configs/models.yaml
+reference_db: data/databases/wr_reference.duckdb
+
+dataset_variants:
+  - strict_photometry
+  - relaxed_photometry
+  - strict_poe_3
+  - relaxed_poe_3
+
+negative_ratios: [10]
+subtypes: [WN, WC]
+target_positive_recall: 0.90
+min_train_positives: 20
+min_features: 4
+
+feature_sets:
+  current_colors:
+    - BP_RP
+    - G_BP
+    - G_RP
+    - J_H
+    - J_K
+    - H_K
+    - W1_W2
+    - parallax
+    - parallax_error
+    - parallax_over_error
+  enriched_tabular:
+    - G
+    - BP
+    - RP
+    - J
+    - H
+    - Ks
+    - W1
+    - W2
+    - W3
+    - W4
+    - BP_RP
+    - G_BP
+    - G_RP
+    - J_H
+    - J_K
+    - H_K
+    - W1_W2
+    - K_W1
+    - G_K
+    - BP_J
+    - W2_W3
+    - W3_W4
+    - W1_W3
+    - K_W2
+    - J_W2
+    - G_W1
+    - parallax
+    - parallax_error
+    - parallax_over_error
+    - pmra
+    - pmdec
+    - pm_total
+    - ruwe
+    - color_locus_normalized_residual
+    - color_locus_outlier_plane_count
+    - G_flux_snr
+    - BP_flux_snr
+    - RP_flux_snr
+    - J_snr
+    - H_snr
+    - Ks_snr
+    - W1_snr
+    - W2_snr
+    - W3_snr
+    - W4_snr
+
+methods:
+  gaussian_mixture:
+    n_components: 2
+    covariance_type: full
+    reg_covar: 0.00001
+    random_state: 42
+  one_class_svm:
+    kernel: rbf
+    nu: 0.10
+    gamma: scale
+  isolation_forest:
+    n_estimators: 300
+    contamination: auto
+    random_state: 42
+  robust_covariance:
+    contamination: 0.10
+    random_state: 42
+
+outputs:
+  run_dir_template: reports/modeling/second_layer/runs/{run_id}
+  latest_results: reports/tables/second_layer_validation_results.csv

@@ -1,0 +1,21 @@
+name: wolf-rayet-detector
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - astropy
+  - astroquery
+  - beautifulsoup4
+  - duckdb
+  - lxml
+  - imbalanced-learn
+  - matplotlib
+  - pandas
+  - polars
+  - pyarrow
+  - pyyaml
+  - scikit-optimize
+  - scikit-learn
+  - typer
+  - pytest
+  - pip

@@ -1,0 +1,16 @@
+function hover(it) {
+  if (it.style.backgroundColor != "orange")
+    {it.style.backgroundColor = "lightskyblue";}
+    }
+
+function leave(it) {
+  if (it.style.backgroundColor != "orange")
+  {it.style.backgroundColor = "powderblue";}
+  }
+
+function toggle(it) {
+  if (it.style.backgroundColor != "orange")
+    {it.style.backgroundColor = "orange";}
+  else
+    {it.style.backgroundColor = "lightskyblue";}
+  }

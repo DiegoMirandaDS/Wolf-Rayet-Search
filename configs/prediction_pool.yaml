@@ -1,0 +1,50 @@
+paths_config: configs/paths.yaml
+filters_config: configs/filters.yaml
+
+output_db: data/databases/prediction_pool.duckdb
+staging_dir: data/raw/prediction_pool
+output_dir: data/processed/prediction_pool/tiles
+parquet:
+  compression: zstd
+
+gaia:
+  credentials_env_file: .env
+  credentials_file_env: GAIA_CREDENTIALS_FILE
+  login_data_server: false
+  cleanup_async_jobs: true
+  cleanup_staging_after_ingest: true
+  output_format: csv
+  max_retries: 3
+  retry_sleep_seconds: 30
+  continue_on_tile_error: true
+
+safety:
+  max_local_bytes: 40000000000
+  max_workers: 4
+  ingest_workers: 1
+
+tiling:
+  ra_step_deg: 10.0
+  dec_step_deg: 10.0
+  stale_running_minutes: 120
+  subdivide_failed:
+    enabled: true
+    ra_step_deg: 5.0
+    dec_step_deg: 5.0
+
+photometry:
+  twomass_allowed_qualities: ["A", "B"]
+  wise_allowed_qualities: ["A", "B"]
+
+astrometry:
+  min_parallax:
+  min_parallax_over_error:
+
+color_envelope:
+  variants:
+    - relaxed_photometry
+    - relaxed_parallax_soft
+    - relaxed_poe_2
+    - relaxed_poe_3
+  use_kept_rows: true
+  server_side_locus_filter: false

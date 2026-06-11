@@ -1,0 +1,7 @@
+raw_reference_dir: data/raw/reference
+raw_simbad_negative_dir: data/raw/simbad_negative
+database_dir: data/databases
+processed_reference_dir: data/processed/reference
+processed_simbad_negative_dir: data/processed/simbad_negative
+wr_reference_db: data/databases/wr_reference.duckdb
+simbad_negative_db: data/databases/simbad_negative.duckdb
