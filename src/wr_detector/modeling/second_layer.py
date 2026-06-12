@@ -20,8 +20,13 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
 from wr_detector.config import load_yaml, resolve_path
-from wr_detector.modeling.history import make_project_relative, make_training_run_id
-from wr_detector.modeling.negative_reduction import configured_negative_ratios, negative_ratio_label
+from wr_detector.modeling.history import (
+    _file_sha256,
+    make_project_relative,
+    make_training_run_id,
+    sync_second_layer_history,
+)
+from wr_detector.modeling.negative_reduction import configured_negative_ratios, negative_ratio_label, reduced_dataset_path
 from wr_detector.modeling.training import load_reduced_or_source_dataset
 
 
@@ -79,12 +84,15 @@ def train_second_layer_validators(
     started = perf_counter()
     for variant in selected_variants:
         for ratio in selected_ratios:
+            dataset_path = reduced_dataset_path(model_config, variant, negative_ratio=ratio)
             dataset = load_reduced_or_source_dataset(
                 model_config,
                 variant,
                 negative_ratio=ratio,
                 reduce_if_missing=False,
             )
+            dataset, color_locus_excluded = apply_color_locus_keep(dataset)
+            lineage = dataset_lineage(config, dataset_path, color_locus_excluded_rows=color_locus_excluded)
             dataset = annotate_wr_subtypes(dataset, reference_subtypes)
             for feature_set_name in selected_feature_sets:
                 requested_features = list(config["feature_sets"][feature_set_name])
@@ -93,17 +101,20 @@ def train_second_layer_validators(
                 missing_features = prepared.attrs["missing_features"]
                 if len(available_features) < int(config.get("min_features", 4)):
                     rows.append(
-                        skipped_row(
-                            run_id=run_id,
-                            variant=variant,
-                            negative_ratio=ratio,
-                            feature_set=feature_set_name,
-                            method="all",
-                            subtype="all",
-                            reason="insufficient_available_features",
-                            available_features=available_features,
-                            missing_features=missing_features,
-                        )
+                        {
+                            **skipped_row(
+                                run_id=run_id,
+                                variant=variant,
+                                negative_ratio=ratio,
+                                feature_set=feature_set_name,
+                                method="all",
+                                subtype="all",
+                                reason="insufficient_available_features",
+                                available_features=available_features,
+                                missing_features=missing_features,
+                            ),
+                            **lineage,
+                        }
                     )
                     continue
                 for subtype in selected_subtypes:
@@ -116,18 +127,21 @@ def train_second_layer_validators(
                                 flush=True,
                             )
                         rows.append(
-                            fit_second_layer_validator(
-                                config=config,
-                                run_id=run_id,
-                                dataset=prepared,
-                                variant=variant,
-                                negative_ratio=ratio,
-                                feature_set_name=feature_set_name,
-                                method_name=method_name,
-                                subtype=subtype,
-                                available_features=available_features,
-                                missing_features=missing_features,
-                            )
+                            {
+                                **fit_second_layer_validator(
+                                    config=config,
+                                    run_id=run_id,
+                                    dataset=prepared,
+                                    variant=variant,
+                                    negative_ratio=ratio,
+                                    feature_set_name=feature_set_name,
+                                    method_name=method_name,
+                                    subtype=subtype,
+                                    available_features=available_features,
+                                    missing_features=missing_features,
+                                ),
+                                **lineage,
+                            }
                         )
     results = pd.DataFrame(rows)
     if not results.empty:
@@ -144,10 +158,63 @@ def train_second_layer_validators(
     latest_path = resolve_path(config["outputs"].get("latest_results", "reports/tables/second_layer_validation_results.csv"))
     latest_path.parent.mkdir(parents=True, exist_ok=True)
     results.to_csv(latest_path, index=False)
+    if not results.empty and bool(config.get("outputs", {}).get("auto_sync_training_history", True)):
+        sync_second_layer_history(
+            model_config,
+            results,
+            run_id=run_id,
+            source_csv=path,
+            config_path=str(config_path),
+            replace_run=True,
+        )
     if verbose:
         print(f"Second-layer run completed in {_format_seconds(perf_counter() - started)}", flush=True)
         print(f"results: {path}", flush=True)
     return results
+
+
+def apply_color_locus_keep(dataset: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Defensively drop color-locus outlier rows from a layer dataset.
+
+    Reduced modelling datasets are already filtered upstream
+    (``modeling_dataset.require_color_locus_keep``), so this is a no-op
+    guard: every validation layer must train and evaluate only on
+    color-locus-kept rows, even if a future dataset slips through
+    unfiltered.
+    """
+    if "color_locus_keep" not in dataset.columns:
+        return dataset, 0
+    keep = dataset["color_locus_keep"].astype(bool)
+    excluded = int((~keep).sum())
+    if excluded == 0:
+        return dataset, 0
+    return dataset[keep].copy(), excluded
+
+
+def dataset_lineage(
+    config: dict[str, Any],
+    dataset_path: Path,
+    *,
+    color_locus_excluded_rows: int,
+) -> dict[str, object]:
+    """Data-lineage fields recorded with every second-layer result row.
+
+    A layer run is reproducible against a first-layer run only when both
+    consumed the same reduced dataset under the same split policy; these
+    hashes make that check possible.
+    """
+    model_config = config.get("models_config", {})
+    models_config_path = resolve_path(str(config.get("models_config_path", "configs/models.yaml")))
+    dataset_cfg = model_config.get("modeling_dataset", {})
+    return {
+        "dataset_path": make_project_relative(dataset_path),
+        "dataset_sha256": _file_sha256(dataset_path) if dataset_path.exists() else None,
+        "models_config_path": str(config.get("models_config_path", "configs/models.yaml")),
+        "models_config_sha256": _file_sha256(models_config_path) if models_config_path.exists() else None,
+        "holdout_fraction": float(model_config.get("holdout_fraction")) if model_config.get("holdout_fraction") is not None else None,
+        "require_color_locus_keep": bool(dataset_cfg.get("require_color_locus_keep", False)),
+        "color_locus_excluded_rows": color_locus_excluded_rows,
+    }
 
 
 def load_second_layer_config(config_path: str | Path) -> dict[str, Any]:

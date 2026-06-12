@@ -34,6 +34,7 @@ modeling = [
 ]
 viz = [
   "streamlit>=1.58",
+  "altair>=5.0",
 ]
 
 [project.scripts]

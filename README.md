@@ -202,7 +202,20 @@ pip install -e ".[viz]"
 wr-detector explore-models --config configs/models.yaml
 ```
 
-The explorer reads `data/databases/training_history.duckdb` in read-only mode. Use it to switch runs, filter dataset variants, compare models by ranking metrics, inspect saved curves and review feature importance without editing notebook cells.
+The explorer reads `data/databases/training_history.duckdb` in read-only mode and joins per-source predictions with `wr_reference.duckdb` and `simbad_negative.duckdb` for case-level identity. It is a multipage app:
+
+- **Overview**: run-level headline numbers and the best model per dataset variant.
+- **Compare models**: filterable ranking table, metric comparison, recovery-by-budget curves, dataset matrix and stability gaps. Selecting a table row sets the model inspected by the other pages.
+- **Model detail**: per-split stability, feature importance, tuned hyperparameters and live holdout PR/ROC/confusion charts computed from synchronized predictions (saved matplotlib figures remain on disk and are listed as artifact paths).
+- **Case review**: case-by-case inspection of holdout or train (out-of-fold) predictions — top candidates, false positives and missed WR — with WR spectral types, SIMBAD object types, photometry, a color-magnitude context plot, cross-model recurrence and SIMBAD/Aladin/ESASky links per source.
+- **Statistics**: WR recovery by broad subtype (WN/WC/WO), false-positive composition by SIMBAD type, score distributions, and run-wide tables of recurrent contaminants and persistently missed WR across all models.
+- **Validation layers**: reviews second-layer (and future layer) validation runs discovered from `reports/modeling/second_layer/runs/`, with retention vs negative-pass-rate tradeoffs per method and subtype. Shows a training hint when no layer runs exist yet.
+
+Pick a color theme with `--theme` (`dracula` default, `nebula`, `slate`):
+
+```powershell
+wr-detector explore-models --config configs/models.yaml --theme nebula
+```
 
 ## Model Selection Policy
 
@@ -227,6 +240,14 @@ wr-detector train-second-layer --config configs/second_layer.yaml --variant stri
 ```
 
 This fits subtype-aware one-class validators for WN/WC and reports holdout positive retention, negative pass rates and calibration-negative pass rates. The layer is for compatibility scoring and candidate re-ranking, not a hard rejection gate.
+
+Second-layer runs are linked to first-layer runs through **data lineage, not run ids**: each result records the reduced-dataset path and SHA-256, the models-config hash (split policy) and the color-locus filter status. Results auto-sync to `second_layer_runs`/`second_layer_results` in `data/databases/training_history.duckdb`; backfill an unsynced CSV run with:
+
+```powershell
+wr-detector sync-second-layer-history --run-id run_YYYYMMDD_second_layer
+```
+
+Color-locus outliers are excluded before the holdout split for all layers; the second layer re-checks this defensively. See `docs/modeling_decisions.md` ("Validation-Layer Lineage And Color-Locus Policy").
 
 See `docs/modeling_decisions.md` for the current modelling rationale.
 

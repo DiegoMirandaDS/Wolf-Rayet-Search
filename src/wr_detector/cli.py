@@ -26,7 +26,40 @@ from wr_detector.pipelines.simbad_negative import build_simbad_negative
 app = typer.Typer(help="Wolf-Rayet Detector project CLI.")
 
 
-def streamlit_model_explorer_command(config: Path, port: int) -> list[str]:
+EXPLORER_THEMES = {
+    "dracula": {
+        "primaryColor": "#bd93f9",
+        "backgroundColor": "#282a36",
+        "secondaryBackgroundColor": "#343746",
+        "textColor": "#f8f8f2",
+    },
+    "nebula": {
+        "primaryColor": "#9d7bff",
+        "backgroundColor": "#161226",
+        "secondaryBackgroundColor": "#221b38",
+        "textColor": "#ece9f7",
+    },
+    "slate": {
+        "primaryColor": "#4da3ff",
+        "backgroundColor": "#0f131a",
+        "secondaryBackgroundColor": "#171c26",
+        "textColor": "#e6e9ef",
+    },
+}
+
+DEFAULT_EXPLORER_THEME = "dracula"
+
+
+def explorer_theme_options(theme: str) -> list[str]:
+    if theme not in EXPLORER_THEMES:
+        raise ValueError(f"Unknown explorer theme: {theme}. Available: {', '.join(EXPLORER_THEMES)}")
+    options = ["--theme.base", "dark"]
+    for key, value in EXPLORER_THEMES[theme].items():
+        options.extend([f"--theme.{key}", value])
+    return options
+
+
+def streamlit_model_explorer_command(config: Path, port: int, theme: str = DEFAULT_EXPLORER_THEME) -> list[str]:
     app_path = Path(__file__).resolve().parent / "apps" / "model_explorer.py"
     return [
         sys.executable,
@@ -36,6 +69,7 @@ def streamlit_model_explorer_command(config: Path, port: int) -> list[str]:
         str(app_path),
         "--server.port",
         str(port),
+        *explorer_theme_options(theme),
         "--",
         "--config",
         str(config),
@@ -210,11 +244,18 @@ def train_models_command(
 def explore_models_command(
     config: Path = typer.Option(Path("configs/models.yaml"), "--config", "-c"),
     port: int = typer.Option(8501, "--port", help="Local Streamlit server port."),
+    theme: str = typer.Option(
+        DEFAULT_EXPLORER_THEME,
+        "--theme",
+        help=f"Color theme: {', '.join(EXPLORER_THEMES)}.",
+    ),
 ) -> None:
     if importlib.util.find_spec("streamlit") is None:
         raise typer.BadParameter('Streamlit is not installed. Install it with: pip install -e ".[viz]"')
-    typer.echo(f"Starting Model Explorer at http://localhost:{port}")
-    subprocess.run(streamlit_model_explorer_command(config, port), check=True)
+    if theme not in EXPLORER_THEMES:
+        raise typer.BadParameter(f"Unknown theme: {theme}. Available: {', '.join(EXPLORER_THEMES)}")
+    typer.echo(f"Starting Model Explorer at http://localhost:{port} (theme: {theme})")
+    subprocess.run(streamlit_model_explorer_command(config, port, theme), check=True)
 
 
 @app.command("train-second-layer")
@@ -250,6 +291,36 @@ def train_second_layer_command(
             f"positive_retention={best['holdout_positive_retention']:.3f}, "
             f"calibration_negative_pass={best['threshold_calibration_negative_pass_rate']:.3f})"
         )
+
+
+@app.command("sync-second-layer-history")
+def sync_second_layer_history_command(
+    config: Path = typer.Option(Path("configs/second_layer.yaml"), "--config", "-c"),
+    run_id: str = typer.Option(..., "--run-id", help="Second-layer run id (directory name under the layer runs dir)."),
+    csv: Path | None = typer.Option(None, "--csv", help="Results CSV. Defaults to the run's results CSV."),
+    replace_run: bool = typer.Option(False, "--replace-run", help="Replace an existing run with the same id."),
+) -> None:
+    import pandas as pd
+
+    from wr_detector.modeling.history import sync_second_layer_history
+    from wr_detector.modeling.second_layer import load_second_layer_config, second_layer_results_path
+
+    layer_config = load_second_layer_config(config)
+    csv_path = csv or second_layer_results_path(layer_config, run_id)
+    if not Path(csv_path).exists():
+        raise typer.BadParameter(f"Second-layer results CSV not found: {csv_path}")
+    results = pd.read_csv(csv_path)
+    result = sync_second_layer_history(
+        layer_config["models_config"],
+        results,
+        run_id=run_id,
+        source_csv=csv_path,
+        config_path=str(config),
+        replace_run=replace_run,
+    )
+    typer.echo("Second-layer history synchronized.")
+    for key, value in result.items():
+        typer.echo(f"{key}: {value}")
 
 
 @app.command("sync-training-history")

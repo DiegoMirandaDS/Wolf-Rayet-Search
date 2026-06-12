@@ -131,6 +131,74 @@ def sync_training_history_frame(
     }
 
 
+def sync_second_layer_history(
+    models_config: dict,
+    results: pd.DataFrame,
+    *,
+    run_id: str,
+    source_csv: str | Path | None = None,
+    config_path: str | Path | None = None,
+    replace_run: bool = False,
+) -> dict[str, object]:
+    """Sync second-layer validation results into the canonical history DB.
+
+    Results land in ``second_layer_results`` with a run registry in
+    ``second_layer_runs``, mirroring the first-layer tables so the
+    DuckDB history stays the single experiment store across layers.
+    """
+    if results.empty:
+        raise ValueError("No second-layer results provided.")
+    db_path = training_history_db_path(models_config)
+    imported_at = datetime.now(UTC).isoformat()
+    prepared = results.copy()
+    if "run_id" not in prepared.columns:
+        prepared.insert(0, "run_id", run_id)
+    prepared["imported_at"] = imported_at
+    prepared = _normalize_dataframe_paths(prepared)
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS second_layer_runs (
+                run_id VARCHAR PRIMARY KEY,
+                imported_at VARCHAR,
+                source_csv VARCHAR,
+                config_path VARCHAR,
+                row_count INTEGER,
+                csv_sha256 VARCHAR
+            )
+            """
+        )
+        exists = bool(
+            con.execute("SELECT COUNT(*) FROM second_layer_runs WHERE run_id = ?", [run_id]).fetchone()[0]
+        )
+        if exists and not replace_run:
+            raise ValueError(f"Second-layer run already exists: {run_id}. Use replace_run to overwrite it.")
+        if exists:
+            if _table_exists(con, "second_layer_results"):
+                con.execute("DELETE FROM second_layer_results WHERE run_id = ?", [run_id])
+            con.execute("DELETE FROM second_layer_runs WHERE run_id = ?", [run_id])
+        con.execute(
+            """
+            INSERT INTO second_layer_runs
+            (run_id, imported_at, source_csv, config_path, row_count, csv_sha256)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                run_id,
+                imported_at,
+                make_project_relative(source_csv) if source_csv is not None else None,
+                str(config_path) if config_path is not None else None,
+                int(len(prepared)),
+                _dataframe_sha256(prepared),
+            ],
+        )
+        _append_dataframe(con, "second_layer_results", prepared)
+
+    return {"db_path": str(db_path), "run_id": run_id, "rows": int(len(prepared))}
+
+
 def list_training_runs(config_path: str | Path = "configs/models.yaml") -> pd.DataFrame:
     config = load_yaml(config_path)
     db_path = training_history_db_path(config)

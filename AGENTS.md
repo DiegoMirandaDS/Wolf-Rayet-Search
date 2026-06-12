@@ -89,6 +89,25 @@ Evaluation policy:
 - The implemented second-layer baseline is `wr-detector train-second-layer --config configs/second_layer.yaml`; it fits WN/WC one-class validators with Gaussian mixture, one-class SVM, Isolation Forest and robust covariance, then evaluates holdout retention and negative pass rates.
 - Gaia DR3 H-alpha is available for enrichment through `gaiadr3.astrophysical_parameters` columns such as `ew_espels_halpha` and `classlabel_espels`, but it is not persisted in local datasets yet. Do not make H-alpha required until a full coverage audit is implemented for negatives and prediction-pool rows.
 
+## Model Explorer
+
+The Streamlit Model Explorer (`wr-detector explore-models`) was rebuilt as a multipage app (2026-06-11):
+
+- Entry point: `src/wr_detector/apps/model_explorer.py`; page/chart/widget code in `src/wr_detector/apps/explorer_ui/`; all query logic stays in tested modules `src/wr_detector/modeling/explorer.py` and `src/wr_detector/modeling/cases.py`. Pages must not embed SQL or business logic.
+- Charts are Altair with `width="container"` and bounded heights; theming comes from Streamlit theme flags via `wr_detector.cli.EXPLORER_THEMES` presets (`--theme dracula|nebula|slate`, default `dracula`), not custom CSS.
+- `wr_detector.modeling.cases` joins `model_predictions` with `wr_reference.duckdb` and `simbad_negative.duckdb` (resolved via `configs/paths.yaml`) for case-level review: per-source identity, WR broad subtype recovery, SIMBAD false-positive composition and cross-model case overlap. It degrades gracefully when the reference DBs are absent.
+- Per-model case loads and run-wide overlap aggregations run as SQL in DuckDB (read-only); only aggregated or per-model frames reach pandas/Streamlit.
+- Model detail renders PR/ROC/confusion live from synchronized predictions (`wr_detector.modeling.cases.precision_recall_points`/`roc_points`); saved matplotlib PNGs stay on disk as artifacts and are listed by path only.
+- Validation layers (second layer now, third layer later) are integrated read-only through `wr_detector.modeling.layers.VALIDATION_LAYERS`: each layer is a spec pointing at its config's `run_dir_template` and results CSV. To add a future layer, append a `ValidationLayer` spec — no page changes needed unless its schema diverges. Layer runs are read from the history DB tables (`<layer>_runs`/`<layer>_results`) first, with CSV discovery as fallback for unsynced runs.
+
+## Validation-Layer Rules
+
+- Layer training is linked to **data lineage, not first-layer run ids**: every second-layer result row records `dataset_path`, `dataset_sha256`, `models_config_path`, `models_config_sha256`, `holdout_fraction`, `require_color_locus_keep` and `color_locus_excluded_rows`. Pair a layer run with a first-layer run only when the dataset hashes match.
+- Future layers that consume upstream outputs (e.g. top-K candidates of a specific first-layer model) must record the upstream `run_id`/`result_id` they consumed, and operational layer pairings must be registered explicitly before prediction-pool scoring.
+- Color-locus outliers are excluded from all modelling before the holdout split (`load_modeling_dataset` with `require_color_locus_keep`), so train/holdout/threshold_calibration in every reduced dataset are already clean. **Every layer (second, third, ...) must train and evaluate only on color-locus-kept rows**; the second layer enforces this with `apply_color_locus_keep` as a defensive guard.
+- Second-layer results auto-sync to `second_layer_runs`/`second_layer_results` in `training_history.duckdb` (`outputs.auto_sync_training_history`, default on). Backfill CSV-only runs with `wr-detector sync-second-layer-history --run-id <id>`.
+- First-layer threshold selection already uses the full `threshold_calibration` negative pool via `make_threshold_selection_scores`; probability calibration is deliberately not applied while the task is ranking.
+
 ## Run IDs And Artifacts
 
 Model notebooks that inspect training results must select `TRAINING_RUN_ID` and load from `data/databases/training_history.duckdb`.

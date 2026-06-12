@@ -83,6 +83,7 @@ def _write_second_layer_fixture(tmp_path: Path) -> Path:
                 "outputs:",
                 f"  modeling_data_dir: {modeling_dir.as_posix()}",
                 '  reduced_dataset_template: "{variant}_reduced.parquet"',
+                f"  training_history_db: {(tmp_path / 'history.duckdb').as_posix()}",
             ]
         ),
         encoding="utf-8",

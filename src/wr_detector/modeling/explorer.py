@@ -180,6 +180,9 @@ def add_hyperparameter_columns(results: pd.DataFrame) -> pd.DataFrame:
         enriched[name] = parsed.map(lambda params, param_name=name: params.get(param_name, pd.NA))
         if name in numeric_params:
             enriched[name] = pd.to_numeric(enriched[name], errors="coerce")
+        else:
+            # Mixed str/float values (e.g. max_features: "sqrt" or 0.5) break Arrow serialization.
+            enriched[name] = enriched[name].map(lambda value: str(value) if pd.notna(value) else pd.NA)
     enriched["hyperparams_compact"] = enriched.apply(compact_hyperparams, axis=1)
     enriched["overfit_warning_flag"] = _overfit_warning_flag(enriched)
     return enriched

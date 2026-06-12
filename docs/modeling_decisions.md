@@ -148,6 +148,19 @@ wr-detector train-models --config configs/models.yaml --run-id run_YYYYMMDD_scie
 
 The existing baseline artifacts are registered in DuckDB as `run_20260608T194455984398Z_d1dee0800bd4` without moving the files.
 
+## Validation-Layer Lineage And Color-Locus Policy
+
+Validation layers (second layer today, any future third layer) are trained independently of first-layer model runs on purpose: a one-class validator learns what a WR subtype looks like, which does not depend on which first-stage classifier was selected. The reproducibility link between layers is therefore **data lineage, not run identity**:
+
+- Every second-layer result row records `dataset_path`, `dataset_sha256`, `models_config_path`, `models_config_sha256`, `holdout_fraction`, `require_color_locus_keep` and `color_locus_excluded_rows`.
+- A layer run may be paired with a first-layer run only when both consumed reduced datasets with the same hashes; otherwise splits may be inconsistent (train/holdout leakage across layers).
+- When a future layer consumes upstream *outputs* (for example, training or evaluating on the top-K candidates of a specific first-layer model), that layer must additionally record the upstream `run_id`/`result_id` it consumed. The application step that pairs layers into an operational candidate pipeline should be registered explicitly (a candidate-stack record) before scoring the prediction pool.
+- Second-layer results auto-sync to the canonical history DB (`second_layer_runs` / `second_layer_results` in `data/databases/training_history.duckdb`); `wr-detector sync-second-layer-history --run-id <id>` backfills CSV-only runs.
+
+Color-locus outliers (rows with `color_locus_keep = false`, both WR and negatives) are excluded from all modelling: the exclusion happens once in `load_modeling_dataset` before the holdout split, so every reduced dataset and every split (train, holdout, threshold_calibration) already excludes them. **Every validation layer must keep this property.** The second layer additionally applies a defensive `apply_color_locus_keep` guard and records how many rows it had to exclude (expected: 0). Future layers must follow the same rule: train and evaluate only on color-locus-kept rows.
+
+Threshold selection in the first layer is not a thresholded-accuracy afterthought: the operating threshold is selected against train-positive out-of-fold scores combined with the full `threshold_calibration` negative pool (`make_threshold_selection_scores`), so the large non-sampled negative population already disciplines the operating point. Probability calibration (Platt/isotonic) is intentionally not applied while the problem is treated as ranking.
+
 ## Next Improvements
 
 - Preserve GWRC `Spectral Type` in modelling exports and audit missed WR objects from the recommended top-100 list by subtype and photometric quality.
