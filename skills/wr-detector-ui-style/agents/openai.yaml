@@ -1,0 +1,7 @@
+interface:
+  display_name: "WR Detector UI Style"
+  short_description: "Rules for the WR Detector Streamlit UI."
+  default_prompt: "Use $wr-detector-ui-style before changing the Wolf-Rayet Detector Model Explorer UI."
+
+policy:
+  allow_implicit_invocation: true

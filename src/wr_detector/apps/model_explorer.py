@@ -20,7 +20,7 @@ from wr_detector.modeling.explorer import explorer_db_path
 
 
 def main() -> None:
-    st.set_page_config(page_title="WR Model Explorer", page_icon="✶", layout="wide")
+    st.set_page_config(page_title="WR Model Explorer", page_icon="*", layout="wide")
     args = _parse_args()
     st.session_state["explorer_config_path"] = str(args.config)
 
@@ -42,7 +42,7 @@ def main() -> None:
 
     with st.sidebar:
         labels = {
-            row.run_id: f"{row.run_id} · {int(row.row_count)} models"
+            row.run_id: f"{row.run_id} | {int(row.row_count)} models"
             for row in runs.itertuples(index=False)
         }
         run_id = st.selectbox("Training run", options=list(labels), format_func=lambda value: labels.get(value, value))

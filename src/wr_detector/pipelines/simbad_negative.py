@@ -1,3 +1,5 @@
+"""SIMBAD non-WR negative-sample pipeline with known WR exclusions and photometry enrichment."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

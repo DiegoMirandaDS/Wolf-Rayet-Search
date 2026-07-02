@@ -93,12 +93,13 @@ Evaluation policy:
 
 The Streamlit Model Explorer (`wr-detector explore-models`) was rebuilt as a multipage app (2026-06-11):
 
+- Agents changing or reviewing Model Explorer UI must use the project skill at `skills/wr-detector-ui-style/SKILL.md` and follow its visual, formatting, chart and app-logic rules.
 - Entry point: `src/wr_detector/apps/model_explorer.py`; page/chart/widget code in `src/wr_detector/apps/explorer_ui/`; all query logic stays in tested modules `src/wr_detector/modeling/explorer.py` and `src/wr_detector/modeling/cases.py`. Pages must not embed SQL or business logic.
 - Charts are Altair with `width="container"` and bounded heights; theming comes from Streamlit theme flags via `wr_detector.cli.EXPLORER_THEMES` presets (`--theme dracula|nebula|slate`, default `dracula`), not custom CSS.
 - `wr_detector.modeling.cases` joins `model_predictions` with `wr_reference.duckdb` and `simbad_negative.duckdb` (resolved via `configs/paths.yaml`) for case-level review: per-source identity, WR broad subtype recovery, SIMBAD false-positive composition and cross-model case overlap. It degrades gracefully when the reference DBs are absent.
 - Per-model case loads and run-wide overlap aggregations run as SQL in DuckDB (read-only); only aggregated or per-model frames reach pandas/Streamlit.
 - Model detail renders PR/ROC/confusion live from synchronized predictions (`wr_detector.modeling.cases.precision_recall_points`/`roc_points`); saved matplotlib PNGs stay on disk as artifacts and are listed by path only.
-- Validation layers (second layer now, third layer later) are integrated read-only through `wr_detector.modeling.layers.VALIDATION_LAYERS`: each layer is a spec pointing at its config's `run_dir_template` and results CSV. To add a future layer, append a `ValidationLayer` spec — no page changes needed unless its schema diverges. Layer runs are read from the history DB tables (`<layer>_runs`/`<layer>_results`) first, with CSV discovery as fallback for unsynced runs.
+- Validation layers (second layer now, third layer later) are integrated read-only through `wr_detector.modeling.layers.VALIDATION_LAYERS`: each layer is a spec pointing at its config's `run_dir_template` and results CSV. To add a future layer, append a `ValidationLayer` spec; no page changes are needed unless its schema diverges. Layer runs are read from the history DB tables (`<layer>_runs`/`<layer>_results`) first, with CSV discovery as fallback for unsynced runs.
 
 ## Validation-Layer Rules
 
@@ -143,6 +144,7 @@ Prediction-pool construction is separate from model training:
 - `04_model_training_results.ipynb`: inspect trained runs by `TRAINING_RUN_ID`, rank models, compare top-K recovery, metrics and artifacts.
 - `04_overfitting_and_tree_diagnostics.ipynb`: inspect overfitting, tree/boosting complexity, feature importance and saved validation artifacts by `TRAINING_RUN_ID`.
 - `05_prediction_pool_audit.ipynb`: audit prediction-pool coverage, exclusions and distribution comparison before applying a model.
+- `06_dimensionality_audit.ipynb`: exploratory PCA/UMAP audit over reduced modelling datasets and synchronized training predictions; used to inspect WR structure, top-K negatives and false-positive populations before deciding whether dimensionality views belong in the Model Explorer.
 
 ## Useful Commands
 

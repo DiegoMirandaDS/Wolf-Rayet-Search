@@ -1,3 +1,5 @@
+"""Model-ready dataset loading, leakage checks, and feature matrix construction."""
+
 from __future__ import annotations
 
 from pathlib import Path

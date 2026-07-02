@@ -1,3 +1,5 @@
+"""VizieR coordinate fallback matching for missing 2MASS and WISE photometry."""
+
 from __future__ import annotations
 
 import numpy as np

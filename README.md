@@ -207,7 +207,7 @@ The explorer reads `data/databases/training_history.duckdb` in read-only mode an
 - **Overview**: run-level headline numbers and the best model per dataset variant.
 - **Compare models**: filterable ranking table, metric comparison, recovery-by-budget curves, dataset matrix and stability gaps. Selecting a table row sets the model inspected by the other pages.
 - **Model detail**: per-split stability, feature importance, tuned hyperparameters and live holdout PR/ROC/confusion charts computed from synchronized predictions (saved matplotlib figures remain on disk and are listed as artifact paths).
-- **Case review**: case-by-case inspection of holdout or train (out-of-fold) predictions — top candidates, false positives and missed WR — with WR spectral types, SIMBAD object types, photometry, a color-magnitude context plot, cross-model recurrence and SIMBAD/Aladin/ESASky links per source.
+- **Case review**: case-by-case inspection of holdout or train (out-of-fold) predictions, including top candidates, false positives and missed WR, with WR spectral types, SIMBAD object types, photometry, a color-magnitude context plot, cross-model recurrence and SIMBAD/Aladin/ESASky links per source.
 - **Statistics**: WR recovery by broad subtype (WN/WC/WO), false-positive composition by SIMBAD type, score distributions, and run-wide tables of recurrent contaminants and persistently missed WR across all models.
 - **Validation layers**: reviews second-layer (and future layer) validation runs discovered from `reports/modeling/second_layer/runs/`, with retention vs negative-pass-rate tradeoffs per method and subtype. Shows a training hint when no layer runs exist yet.
 
@@ -251,6 +251,8 @@ Color-locus outliers are excluded before the holdout split for all layers; the s
 
 See `docs/modeling_decisions.md` for the current modelling rationale.
 
+The latest code and notebook audit is documented in `docs/code_audit_2026-06-24.md`.
+
 ## Prediction Pool
 
 Build or audit the Gaia-scale prediction pool:
@@ -282,6 +284,7 @@ Notebooks are audit and visualization artifacts. They should not contain source-
 - `notebooks/04_model_training_results.ipynb`: audits a selected `TRAINING_RUN_ID` from DuckDB; use `wr-detector explore-models` for routine interactive comparison.
 - `notebooks/04_overfitting_and_tree_diagnostics.ipynb`: audits overfitting, tree/boosting complexity, feature importance and saved validation artifacts for a selected `TRAINING_RUN_ID`.
 - `notebooks/05_prediction_pool_audit.ipynb`: audits prediction-pool coverage, failed tiles, known-source exclusions and distribution comparison before model scoring.
+- `notebooks/06_dimensionality_audit.ipynb`: explores PCA/UMAP projections for reduced modelling datasets, synchronized model predictions, top-K negatives and false-positive populations before promoting dimensionality views to the Model Explorer.
 
 ## Useful Outputs
 

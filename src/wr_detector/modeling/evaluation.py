@@ -1,3 +1,5 @@
+"""Threshold, binary, and ranking metrics for rare-object candidate recovery."""
+
 from __future__ import annotations
 
 import numpy as np

@@ -1,3 +1,5 @@
+"""Model complexity and permutation-importance diagnostics for trained estimators."""
+
 from __future__ import annotations
 
 import pandas as pd

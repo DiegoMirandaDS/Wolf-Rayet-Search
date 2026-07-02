@@ -1,3 +1,5 @@
+"""SIMBAD TAP query and filtering helpers for controlled non-WR negative samples."""
+
 from __future__ import annotations
 
 import re

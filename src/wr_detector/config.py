@@ -1,3 +1,5 @@
+"""Configuration loading and project-root path resolution."""
+
 from __future__ import annotations
 
 from pathlib import Path

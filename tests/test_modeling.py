@@ -194,7 +194,7 @@ def test_run_model_benchmark_writes_summary_table(tmp_path):
                 "random_state: 42",
                 "holdout_fraction: 0.2",
                 "cv: {n_splits: 3, n_repeats: 2}",
-                "threshold: {metric: f2, min_precision: 0.5}",
+                "selection: {metric: f2, min_precision: 0.5}",
                 "outputs:",
                 f"  reports_dir: {out_dir.as_posix()}",
                 f"  benchmark_table: {(out_dir / 'benchmark.csv').as_posix()}",
@@ -384,11 +384,15 @@ def test_training_history_syncs_results_and_cleanup_detects_orphans(tmp_path):
     predictions_path = reports_dir / "run_predictions.csv"
     fi_path = reports_dir / "run_feature_importance.csv"
     orphan_path = models_dir / "old.joblib"
+    run_orphan_dir = reports_dir / "runs" / "old_run" / "reports"
+    run_orphan_dir.mkdir(parents=True)
+    run_orphan_sidecar = run_orphan_dir / "old_predictions.csv"
     for path in [model_path, cm_path, roc_path, pr_path, fi_fig_path, orphan_path]:
         path.write_bytes(b"x")
     metadata_path.write_text('{"dataset_variant": "strict_photometry", "model": "xgboost"}', encoding="utf-8")
     predictions_path.write_text("split,target,score,predicted,threshold\nholdout,1,0.9,1,0.5\n", encoding="utf-8")
     fi_path.write_text("feature,importance_mean,importance_std,importance_type\nBP_RP,0.5,0.0,test\n", encoding="utf-8")
+    run_orphan_sidecar.write_text("split,target,score,predicted,threshold\nholdout,0,0.1,0,0.5\n", encoding="utf-8")
 
     results_path = tables_dir / "model_training_results.csv"
     pd.DataFrame(
@@ -444,8 +448,10 @@ def test_training_history_syncs_results_and_cleanup_detects_orphans(tmp_path):
 
     cleanup = cleanup_unreferenced_model_artifacts(config_path, apply=False)
     assert str(orphan_path) in set(cleanup.loc[~cleanup["keep"], "path"])
+    assert str(run_orphan_sidecar) in set(cleanup.loc[~cleanup["keep"], "path"])
     cleanup_unreferenced_model_artifacts(config_path, apply=True)
     assert not orphan_path.exists()
+    assert not run_orphan_sidecar.exists()
     assert model_path.exists()
 
     runs = list_training_runs(config_path)

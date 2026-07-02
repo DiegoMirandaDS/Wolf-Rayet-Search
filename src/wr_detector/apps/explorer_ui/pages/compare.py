@@ -64,7 +64,7 @@ def render() -> None:
     if recovery is not None:
         st.altair_chart(recovery)
 
-    tab_matrix, tab_gaps = st.tabs(["Dataset × model matrix", "Stability gaps"])
+    tab_matrix, tab_gaps = st.tabs(["Dataset x model matrix", "Stability gaps"])
     with tab_matrix:
         heatmap = charts.dataset_heatmap(
             filtered,
@@ -142,5 +142,5 @@ def _ranking_table(ranked: pd.DataFrame, metric: str) -> None:
         result_id = str(view.iloc[selected_rows[0]]["result_id"])
         st.session_state[ui.SELECTED_MODEL_KEY] = result_id
         st.caption(
-            f"Selected **{view.iloc[selected_rows[0]]['short_label']}** — open *Model detail*, *Case review* or *Statistics* to inspect it."
+            f"Selected **{view.iloc[selected_rows[0]]['short_label']}** - open *Model detail*, *Case review* or *Statistics* to inspect it."
         )

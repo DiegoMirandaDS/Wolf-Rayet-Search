@@ -1,3 +1,5 @@
+"""DuckDB persistence helpers for reproducible catalogue databases."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,5 @@
+"""Typer CLI entry points for catalogue, modelling, history, and explorer workflows."""
+
 from __future__ import annotations
 
 import importlib.util

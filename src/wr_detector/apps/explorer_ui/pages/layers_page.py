@@ -46,7 +46,7 @@ def render() -> None:
         return
 
     labels = {
-        row.run_id: f"{row.run_id} · {row.modified_at:%Y-%m-%d %H:%M} UTC · {row.source}"
+        row.run_id: f"{row.run_id} | {row.modified_at:%Y-%m-%d %H:%M} UTC | {row.source}"
         for row in runs.itertuples(index=False)
     }
     run_id = st.selectbox("Layer run", options=list(labels), format_func=lambda value: labels.get(value, value))
@@ -68,10 +68,10 @@ def render() -> None:
     calib_pass = results.get("threshold_calibration_negative_pass_rate")
     ui.kpi_row(
         [
-            ("Validators", f"{total:,}", "variant × features × method × subtype"),
+            ("Validators", f"{total:,}", "variant x features x method x subtype"),
             ("Accepted", f"{accepted:,} ({accepted / total:.0%})" if total else "0", None),
-            ("Best WR retention", ui.fmt_pct(retention.max()) if retention is not None else "—", "Holdout positives kept at threshold"),
-            ("Lowest calib pass", ui.fmt_pct(calib_pass.min()) if calib_pass is not None else "—", "Calibration negatives passing (lower is better)"),
+            ("Best WR retention", ui.fmt_pct(retention.max()) if retention is not None else "-", "Holdout positives kept at threshold"),
+            ("Lowest calib pass", ui.fmt_pct(calib_pass.min()) if calib_pass is not None else "-", "Calibration negatives passing (lower is better)"),
         ]
     )
 
@@ -108,7 +108,7 @@ def _lineage_section(results: pd.DataFrame) -> None:
     ]
     if not present:
         st.caption(
-            "⚠ This run predates data-lineage tracking: it does not record which reduced datasets "
+            "Warning: this run predates data-lineage tracking. It does not record which reduced datasets "
             "or split policy it was trained against. Prefer retraining before pairing it with a first-layer run."
         )
         return

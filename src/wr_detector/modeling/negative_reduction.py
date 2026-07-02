@@ -1,3 +1,5 @@
+"""Stable holdout splitting and representative negative reduction for modelling datasets."""
+
 from __future__ import annotations
 
 from pathlib import Path

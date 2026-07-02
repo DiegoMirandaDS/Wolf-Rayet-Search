@@ -1,3 +1,5 @@
+"""Read-only training-history queries and result enrichment for the Model Explorer."""
+
 from __future__ import annotations
 
 import json

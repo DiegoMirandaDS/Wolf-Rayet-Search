@@ -1,3 +1,5 @@
+"""GWRC/Crowther catalogue ingestion and Gaia DR3 alias extraction."""
+
 from __future__ import annotations
 
 import hashlib

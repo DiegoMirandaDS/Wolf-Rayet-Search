@@ -1,3 +1,5 @@
+"""Statistical assumption checks for robust color-locus regression audits."""
+
 from __future__ import annotations
 
 import numpy as np

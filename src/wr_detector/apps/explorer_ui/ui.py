@@ -45,7 +45,7 @@ def with_short_labels(results: pd.DataFrame) -> pd.DataFrame:
     if duplicated.any() and "negative_ratio_label" in enriched.columns:
         enriched.loc[duplicated, "short_label"] = (
             enriched.loc[duplicated, "short_label"]
-            + " · "
+            + " | "
             + enriched.loc[duplicated, "negative_ratio_label"].astype(str)
         )
     return enriched
@@ -56,7 +56,7 @@ def short_label(row: pd.Series) -> str:
     sampler = str(row.get("sampler", "")).replace("smote_enn", "SMOTE-ENN").replace("smote", "SMOTE")
     variant = str(row.get("dataset_variant", ""))
     feat = " +err" if bool(row.get("includes_parallax_error")) else ""
-    return f"{model}/{sampler} · {variant}{feat}"
+    return f"{model}/{sampler} | {variant}{feat}"
 
 
 def status_badge(status: object) -> str:
@@ -88,7 +88,7 @@ def kpi_row(items: list[tuple[str, str, str | None]]) -> None:
 
 def fmt(value: object, *, digits: int = 3) -> str:
     if value is None or pd.isna(value):
-        return "—"
+        return "-"
     if isinstance(value, float):
         return f"{value:.{digits}f}"
     return str(value)
@@ -96,14 +96,14 @@ def fmt(value: object, *, digits: int = 3) -> str:
 
 def fmt_pct(value: object) -> str:
     if value is None or pd.isna(value):
-        return "—"
+        return "-"
     return f"{float(value):.1%}"
 
 
 def fmt_count_pct(count: object, pct: object) -> str:
     if count is None or pd.isna(count):
-        return "—"
+        return "-"
     text = str(int(count))
     if pct is not None and pd.notna(pct):
-        text += f" · {float(pct):.0%}"
+        text += f" | {float(pct):.0%}"
     return text

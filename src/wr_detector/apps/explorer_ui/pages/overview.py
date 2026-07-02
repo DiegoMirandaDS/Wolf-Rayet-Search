@@ -33,10 +33,10 @@ def render() -> None:
             ("Configurations", f"{total:,}", "Models evaluated in this run"),
             ("Accepted", f"{accepted:,} ({accepted / total:.0%})" if total else "0", "selection_status = accepted"),
             ("Overfit warnings", f"{warnings:,}", "overfit_warning_flag set"),
-            ("WR in holdout", f"{int(wr_holdout.iloc[0]):,}" if not wr_holdout.empty else "—", "Positive holdout sample size"),
+            ("WR in holdout", f"{int(wr_holdout.iloc[0]):,}" if not wr_holdout.empty else "-", "Positive holdout sample size"),
             (
                 "Best WR@100",
-                ui.fmt_count_pct(best_row.get("holdout_wr_at_100"), best_row.get("holdout_wr_at_100_pct")) if best_row is not None else "—",
+                ui.fmt_count_pct(best_row.get("holdout_wr_at_100"), best_row.get("holdout_wr_at_100_pct")) if best_row is not None else "-",
                 best_row["short_label"] if best_row is not None else None,
             ),
         ]
@@ -92,5 +92,5 @@ def render() -> None:
     if not current.empty:
         row = current.iloc[0]
         st.caption(
-            f"Run `{row['run_id']}` · imported {row.get('imported_at', '—')} · source `{row.get('source_csv', '—')}`"
+            f"Run `{row['run_id']}` | imported {row.get('imported_at', '-')} | source `{row.get('source_csv', '-')}`"
         )

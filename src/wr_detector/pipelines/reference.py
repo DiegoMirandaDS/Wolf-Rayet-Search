@@ -1,3 +1,5 @@
+"""Reference WR catalogue build pipeline with Gaia, 2MASS, WISE, and VizieR enrichment."""
+
 from __future__ import annotations
 
 from dataclasses import asdict

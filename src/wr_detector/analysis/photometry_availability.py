@@ -1,3 +1,5 @@
+"""Photometric availability summaries used to design reproducible dataset variants."""
+
 from __future__ import annotations
 
 from itertools import combinations

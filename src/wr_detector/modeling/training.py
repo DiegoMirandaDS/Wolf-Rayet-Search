@@ -1,3 +1,5 @@
+"""Bayesian model training, threshold selection, validation artifacts, and run persistence."""
+
 from __future__ import annotations
 
 import json

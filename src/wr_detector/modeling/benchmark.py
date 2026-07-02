@@ -1,3 +1,5 @@
+"""Lightweight baseline benchmarking before the full BayesSearchCV training sweep."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -119,11 +121,12 @@ def _benchmark_one_model(
     positive_weight = positive_class_weight(y_train)
     pipeline = build_model_pipeline(model_config, random_state=random_state, positive_weight=positive_weight)
     oof_score = _repeated_oof_predict_proba(pipeline, x_train, y_train, cv=cv)
+    threshold_cfg = config.get("threshold", config.get("selection", {}))
     threshold = select_threshold(
         y_train,
         oof_score,
         beta=2.0,
-        min_precision=float(config["threshold"]["min_precision"]),
+        min_precision=float(threshold_cfg.get("min_precision", 0.0)),
     )
     cv_metrics = compute_binary_metrics(y_train, oof_score, threshold=float(threshold["threshold"]))
     fitted = clone(pipeline).fit(x_train, y_train)

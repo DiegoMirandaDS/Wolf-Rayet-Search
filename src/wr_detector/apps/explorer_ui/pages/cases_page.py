@@ -19,9 +19,9 @@ TABLE_COLUMNS = [
     ("spectral_type", "WR type"),
     ("simbad_main_type", "SIMBAD type"),
     ("G", "G"),
-    ("BP_RP", "BP−RP"),
-    ("J_K", "J−Ks"),
-    ("W1_W2", "W1−W2"),
+    ("BP_RP", "BP-RP"),
+    ("J_K", "J-Ks"),
+    ("W1_W2", "W1-W2"),
     ("parallax", "parallax"),
     ("ruwe", "RUWE"),
 ]
@@ -126,14 +126,14 @@ def _case_detail(subset: pd.DataFrame, split: str, top_k: int) -> None:
     st.session_state[CASE_SOURCE_KEY] = int(case["source_id"])
 
     nav_prev, nav_pos, nav_next = st.columns([1, 2, 1])
-    if nav_prev.button("← Previous", disabled=idx <= 0, width="stretch"):
+    if nav_prev.button("< Previous", disabled=idx <= 0, width="stretch"):
         st.session_state[CASE_SOURCE_KEY] = int(subset.iloc[idx - 1]["source_id"])
         st.rerun()
     nav_pos.markdown(
         f"<div style='text-align:center;padding-top:6px'>case {idx + 1} of {len(subset)}</div>",
         unsafe_allow_html=True,
     )
-    if nav_next.button("Next →", disabled=idx >= len(subset) - 1, width="stretch"):
+    if nav_next.button("Next >", disabled=idx >= len(subset) - 1, width="stretch"):
         st.session_state[CASE_SOURCE_KEY] = int(subset.iloc[idx + 1]["source_id"])
         st.rerun()
 
@@ -149,7 +149,7 @@ def _case_detail(subset: pd.DataFrame, split: str, top_k: int) -> None:
     if not is_wr and pd.notna(case.get("simbad_sp_type")) and str(case.get("simbad_sp_type")).strip():
         identity_bits.append(f"SIMBAD sp. type **{case['simbad_sp_type']}**")
     if identity_bits:
-        st.markdown(" · ".join(identity_bits))
+        st.markdown(" | ".join(identity_bits))
 
     ui.kpi_row(
         [
@@ -176,7 +176,7 @@ def _case_detail(subset: pd.DataFrame, split: str, top_k: int) -> None:
             f"[Aladin Lite](https://aladin.cds.unistra.fr/AladinLite/?target={float(case['ra'])}%20{float(case['dec'])}&fov=0.05&survey=P%2FDSS2%2Fcolor)"
         )
         links.append(f"[ESASky](https://sky.esa.int/esasky/?target={float(case['ra'])}%20{float(case['dec'])}&fov=0.1)")
-    st.markdown("Gaia DR3 `" + str(gaia_id) + "` · " + " · ".join(links))
+    st.markdown("Gaia DR3 `" + str(gaia_id) + "` | " + " | ".join(links))
 
 
 def _recurrence(case: pd.Series, split: str, top_k: int) -> pd.Series | None:

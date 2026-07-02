@@ -1,3 +1,5 @@
+"""ADQL builders and normalization helpers for Gaia DR3 photometry and crossmatches."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

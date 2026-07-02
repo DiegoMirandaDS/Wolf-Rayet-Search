@@ -1,3 +1,5 @@
+"""Stable source-id holdout masks and stratified cross-validation builders."""
+
 from __future__ import annotations
 
 import hashlib

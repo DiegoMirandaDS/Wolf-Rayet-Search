@@ -1,3 +1,5 @@
+"""Public modelling API for reduction, training, evaluation, and history workflows."""
+
 from wr_detector.modeling.benchmark import run_model_benchmark
 from wr_detector.modeling.data import (
     FORBIDDEN_FEATURE_PREFIXES,

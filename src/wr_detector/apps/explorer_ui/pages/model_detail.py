@@ -88,12 +88,12 @@ def _curves_section(selected: pd.Series) -> None:
     threshold = cases["threshold"].dropna().iloc[0] if cases["threshold"].notna().any() else None
     left, mid, right = st.columns([1.2, 1.2, 1], gap="large")
     with left:
-        st.caption(f"Precision-recall · AP {ui.fmt(selected.get('holdout_average_precision'))}")
+        st.caption(f"Precision-recall | AP {ui.fmt(selected.get('holdout_average_precision'))}")
         pr_chart = charts.precision_recall_chart(precision_recall_points(cases), threshold=threshold)
         if pr_chart is not None:
             st.altair_chart(pr_chart)
     with mid:
-        st.caption(f"ROC · AUC {ui.fmt(selected.get('holdout_roc_auc'))}")
+        st.caption(f"ROC | AUC {ui.fmt(selected.get('holdout_roc_auc'))}")
         roc = charts.roc_chart(roc_points(cases), threshold=threshold)
         if roc is not None:
             st.altair_chart(roc)
@@ -110,5 +110,5 @@ def _artifact_section(selected: pd.Series) -> None:
             path = resolve_artifact_path(raw)
             if path is None:
                 continue
-            status = "✓" if path.exists() else "missing —"
+            status = "ok" if path.exists() else "missing"
             st.markdown(f"**{label}** {status} `{raw}`")

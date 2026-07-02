@@ -1,3 +1,5 @@
+"""Tiled Gaia prediction-pool construction, ingestion, exclusion, and coverage auditing."""
+
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait

@@ -1,3 +1,5 @@
+"""Notebook helpers for selecting synchronized training runs from DuckDB history."""
+
 from __future__ import annotations
 
 from pathlib import Path

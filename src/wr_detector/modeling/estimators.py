@@ -1,3 +1,5 @@
+"""Imbalanced-learn pipelines, samplers, and estimator factories for WR ranking models."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

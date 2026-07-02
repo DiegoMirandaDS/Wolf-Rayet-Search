@@ -129,7 +129,7 @@ def stability_gap_bars(ranked: pd.DataFrame) -> alt.Chart | None:
         var_name="gap",
         value_name="value",
     )
-    long["gap"] = long["gap"].map({"cv_train_gap_f2": "train − CV", "holdout_cv_gap_f2": "holdout − CV"})
+    long["gap"] = long["gap"].map({"cv_train_gap_f2": "train - CV", "holdout_cv_gap_f2": "holdout - CV"})
     bars = (
         alt.Chart(long)
         .mark_bar()

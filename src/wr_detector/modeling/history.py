@@ -1,3 +1,5 @@
+"""Synchronization and cleanup of training artifacts in the canonical DuckDB history."""
+
 from __future__ import annotations
 
 import hashlib
@@ -551,6 +553,16 @@ def _iter_artifact_candidates(config: dict) -> Iterable[Path]:
             continue
         for pattern in patterns:
             yield from directory.glob(pattern)
+    runs_dir = reports_dir / "runs"
+    if runs_dir.exists():
+        for pattern in [
+            "*/models/*.joblib",
+            "*/models/*.json",
+            "*/figures/*.png",
+            "*/reports/*_predictions.csv",
+            "*/reports/*_feature_importance.csv",
+        ]:
+            yield from runs_dir.glob(pattern)
 
 
 def _is_db_backed_sidecar(path: Path) -> bool:

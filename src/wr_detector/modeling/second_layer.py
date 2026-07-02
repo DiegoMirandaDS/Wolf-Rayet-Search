@@ -1,3 +1,5 @@
+"""Subtype-aware one-class validation layer for compatibility scoring and re-ranking."""
+
 from __future__ import annotations
 
 import json

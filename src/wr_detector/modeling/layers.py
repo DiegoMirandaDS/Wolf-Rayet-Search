@@ -41,7 +41,7 @@ class ValidationLayer:
 VALIDATION_LAYERS: list[ValidationLayer] = [
     ValidationLayer(
         key="second_layer",
-        title="Second layer · one-class validators",
+        title="Second layer - one-class validators",
         config_path="configs/second_layer.yaml",
         results_filename="second_layer_validation_results.csv",
         train_command="wr-detector train-second-layer --config configs/second_layer.yaml",
