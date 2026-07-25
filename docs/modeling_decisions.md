@@ -38,6 +38,51 @@ wr-detector reduce-negatives --config configs/models.yaml
 
 The reason for class-stratified holdout is scarcity of positives. A purely global hash split is reproducible, but it does not guarantee a stable WR count in holdout for every variant. Stratifying the same stable hash by target class preserves reproducibility while making the test set scientifically easier to compare.
 
+## Prediction-Pool Locus Gate Pilot (2026-07-21)
+
+The main modelling pipeline remains conditioned on `color_locus_keep`; the holdout split is not moved before the locus. A separate pilot tested whether the local aggregate filter used after Gaia acquisition was a safe superset of all exact variant loci.
+
+The aggregate is constructed by taking the midpoint of exact slopes and intercepts and the maximum threshold plane by plane. This construction has no geometric guarantee of containing the union of the original bands. Five predeclared Gaia boxes were acquired using only the current global color envelope, then evaluated with the literal aggregate implementation and all eight exact loci.
+
+Results:
+
+- 9,102 sources were acquired inside the envelope.
+- 333 pass at least one exact locus but fail the aggregate; 327 remain compatible after variant quality and astrometric conditions.
+- The aggregate keeps 5,858 sources; the exact compatible union keeps 6,151 (+293 net, +5.0%).
+- The acquisition envelope alone keeps all 9,102 (+55.4% versus the aggregate).
+- Two known WR controls within the envelope, WR 122-15 (WN6) and WR 157 (WN5o(+B1II)), pass an exact compatible variant but fail the aggregate.
+- The discrepancy is dominated by the `J_H__H_K` and `J_K__H_K` planes.
+- The pilot's aggregate result reconciles with the current pool in all five boxes before the later known-source exclusion step.
+
+Decision: the current prediction pool is not approved for definitive scoring of the planned model grid. Do not reconstruct or mass-score it yet. The provisional replacement is the versioned logical union of exact compatible variants, while preserving the locus-conditioned pipeline. Run a wider independent audit before reconstruction; use acquisition-envelope-only as the maximum-sensitivity fallback, recognizing its larger volume.
+
+The 386 historical raw CSVs are not primary evidence: 385 link to completed tiles in the partial-build registry, but the query text/hash and configuration/envelope/locus hashes were not persisted; one file is `test_simple`. The pilot therefore uses new persistent queries with ADQL, Gaia job id and SHA-256 lineage. Reproduce with `wr-detector pilot-prediction-pool-locus --config configs/prediction_pool_locus_pilot.yaml`.
+
+## Expanded Exact-Union Spatial Audit (2026-07-22)
+
+The reconstruction gate was evaluated in 18 persistent Gaia boxes stratified by Galactic longitude/latitude, acquisition density, magnitude, inner/outer disk and approximate extinction. Unknown Gaia sources remain unlabelled, so the reported quantities are discrepancy rates and admitted-source densities, not false-positive rates.
+
+Results:
+
+- 44,469 sources were acquired inside the broad envelope.
+- The aggregate keeps 24,570; the compatible exact union keeps 26,369.
+- The aggregate rejects 1,960 compatible exact-union sources (7.43% of that union) and admits 161 sources outside the compatible union, for +1,799 net sources (+7.32%) under the exact union.
+- Regional loss ranges from 1.96% to 18.90% outside the very small Galactic-centre box; the largest rates occur in dense/high-extinction inner-disk fields. High-density strata lose 12.48%, versus 4.03–4.29% in the low/medium density strata. Inner-disk fields lose 13.94%, versus 2.94% in the outer disk and 2.37% off the plane.
+- The discrepancy rises with magnitude: 4.11% for `G<12`, 6.48% for `16<=G<18`, and 10.90% for `G>=18`.
+- Seven model variants have observed losses. `relaxed_poe_2` has zero observed losses in the sample, but it is not analytically contained plane by plane. A deterministic Sobol search that respects all envelope bounds and the Gaia/2MASS color identities finds 25 explicit `relaxed_poe_2` color witnesses that pass the exact locus and fail the aggregate; witnesses exist for all eight variants. Therefore no variant is certified complete in the legacy pool.
+- The two known-WR regression controls remain affected: WR 122-15 and WR 157.
+
+Decision: create a complete logical replacement as a **new parallel pool**, and preserve the current build as immutable legacy `aggregated_mean_fit`. A prioritized regional execution order is acceptable, but a priority-only reconstruction is not the final scientific dataset. The legacy pool may be used only for audits or exploratory engineering, not definitive model scoring, including for `relaxed_poe_2`.
+
+The legacy configuration is now guarded in code: `configs/prediction_pool.yaml`
+is marked `legacy_read_only`, and a non-dry-run `build-prediction-pool` call
+raises before opening or modifying its DuckDB. This avoids presenting the old
+aggregate constructor as the corrected reconstruction path. The full-sky
+exact-union command will be published only with separate output locations,
+immutable acquisition storage and validated tile manifests/resume behaviour.
+
+The preferred persistence design is one immutable Zstandard acquisition Parquet per terminal tile containing `compatible_variant_mask`, `compatible_variant_count` and `passes_any_exact_variant`, with eligible and model-specific logical views. Audit-based planning estimates are 14.77 GiB for eligible-only, 38.48 GiB for physical acquisition plus eligible layers, and 23.88 GiB for acquisition-with-mask plus logical views. These are stratified-sample extrapolations, not capacity guarantees. See `docs/prediction_pool_exact_union_design.md` and reproduce with `wr-detector audit-prediction-pool-exact-union --config configs/prediction_pool_locus_audit.yaml`.
+
 ## Model Selection
 
 The main comparison should prioritize:

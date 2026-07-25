@@ -1,0 +1,238 @@
+prediction_pool_config: configs/prediction_pool.yaml
+models_config: configs/models.yaml
+
+run_id: audit_20260722_exact_union_spatial_v1
+reuse_existing_acquisitions: true
+
+# Extra Gaia DR3 fields are audit-only. ag_gspphot is treated as an incomplete
+# line-of-sight proxy, never as a label or a required pool feature.
+extra_gaia_columns:
+  galactic_l: l
+  galactic_b: b
+  ag_gspphot: ag_gspphot
+  ebpminrp_gspphot: ebpminrp_gspphot
+
+regions:
+  - name: galactic_center_extinction
+    description: "Bulge/centre control near l=0, b=0; very high expected extinction."
+    galactic_l_center: 0.0
+    galactic_b_center: 0.0
+    disk_zone: bulge
+    latitude_stratum: plane
+    extinction_expectation: very_high
+    ra_min: 266.229988
+    ra_max: 266.579988
+    dec_min: -29.111178
+    dec_max: -28.761178
+  - name: inner_plane_l30
+    description: "Dense inner-plane WR field near l=30, b≈0.4."
+    galactic_l_center: 29.8
+    galactic_b_center: 0.4
+    disk_zone: inner_disk
+    latitude_stratum: plane
+    extinction_expectation: high
+    ra_min: 280.836066
+    ra_max: 281.336066
+    dec_min: -2.864234
+    dec_max: -2.364234
+  - name: disk_l60_b0
+    description: "First-quadrant disk field near l=60, b=0."
+    galactic_l_center: 60.0
+    galactic_b_center: 0.0
+    disk_zone: inner_disk
+    latitude_stratum: plane
+    extinction_expectation: high
+    ra_min: 295.702948
+    ra_max: 296.249802
+    dec_min: 23.640376
+    dec_max: 24.140376
+  - name: cygnus_l80
+    description: "Dense Cygnus WR field near l=80.6, b≈0.4."
+    galactic_l_center: 80.6
+    galactic_b_center: 0.4
+    disk_zone: inner_disk
+    latitude_stratum: plane
+    extinction_expectation: high
+    ra_min: 308.696173
+    ra_max: 309.196173
+    dec_min: 41.129064
+    dec_max: 41.629064
+  - name: outer_l120_b0
+    description: "Outer-disk plane field near l=120."
+    galactic_l_center: 120.0
+    galactic_b_center: 0.0
+    disk_zone: outer_disk
+    latitude_stratum: plane
+    extinction_expectation: medium
+    ra_min: 5.905278
+    ra_max: 6.996384
+    dec_min: 62.475727
+    dec_max: 62.975727
+  - name: outer_l150_b0
+    description: "Outer-disk plane field near l=150."
+    galactic_l_center: 150.0
+    galactic_b_center: 0.0
+    disk_zone: outer_disk
+    latitude_stratum: plane
+    extinction_expectation: medium
+    ra_min: 60.707141
+    ra_max: 61.526994
+    dec_min: 52.170186
+    dec_max: 52.670186
+  - name: anticenter_l180
+    description: "Galactic anticentre plane control near l=180, b=0."
+    galactic_l_center: 180.0
+    galactic_b_center: 0.0
+    disk_zone: outer_disk
+    latitude_stratum: plane
+    extinction_expectation: low_to_medium
+    ra_min: 85.904988
+    ra_max: 86.904988
+    dec_min: 28.436178
+    dec_max: 29.436178
+  - name: outer_l210_b0
+    description: "Outer-disk plane field near l=210."
+    galactic_l_center: 210.0
+    galactic_b_center: 0.0
+    disk_zone: outer_disk
+    latitude_stratum: plane
+    extinction_expectation: low_to_medium
+    ra_min: 101.271383
+    ra_max: 101.771902
+    dec_min: 2.359142
+    dec_max: 2.859142
+  - name: outer_l240_b0
+    description: "Outer-disk plane field near l=240."
+    galactic_l_center: 240.0
+    galactic_b_center: 0.0
+    disk_zone: outer_disk
+    latitude_stratum: plane
+    extinction_expectation: medium
+    ra_min: 115.702948
+    ra_max: 116.249802
+    dec_min: -24.140376
+    dec_max: -23.640376
+  - name: disk_l270_b0
+    description: "Third/fourth-quadrant transition field near l=270, b=0."
+    galactic_l_center: 270.0
+    galactic_b_center: 0.0
+    disk_zone: disk_transition
+    latitude_stratum: plane
+    extinction_expectation: medium
+    ra_min: 137.628353
+    ra_max: 138.380410
+    dec_min: -48.579637
+    dec_max: -48.079637
+  - name: inner_l300_b0
+    description: "Fourth-quadrant inner-disk plane field near l=300."
+    galactic_l_center: 300.0
+    galactic_b_center: 0.0
+    disk_zone: inner_disk
+    latitude_stratum: plane
+    extinction_expectation: high
+    ra_min: 185.905278
+    ra_max: 186.996384
+    dec_min: -62.975727
+    dec_max: -62.475727
+  - name: inner_l330_b0
+    description: "Fourth-quadrant inner-disk plane field near l=330."
+    galactic_l_center: 330.0
+    galactic_b_center: 0.0
+    disk_zone: inner_disk
+    latitude_stratum: plane
+    extinction_expectation: high
+    ra_min: 240.707141
+    ra_max: 241.526994
+    dec_min: -52.670186
+    dec_max: -52.170186
+  - name: inner_l30_bplus5
+    description: "Inner disk above the plane near l=30, b=+5."
+    galactic_l_center: 30.0
+    galactic_b_center: 5.0
+    disk_zone: inner_disk
+    latitude_stratum: low_latitude
+    extinction_expectation: medium
+    ra_min: 276.724019
+    ra_max: 277.424030
+    dec_min: -0.671290
+    dec_max: 0.028710
+  - name: inner_l30_bminus5
+    description: "Inner disk below the plane near l=30, b=-5."
+    galactic_l_center: 30.0
+    galactic_b_center: -5.0
+    disk_zone: inner_disk
+    latitude_stratum: low_latitude
+    extinction_expectation: medium
+    ra_min: 285.634138
+    ra_max: 286.336686
+    dec_min: -5.231244
+    dec_max: -4.531244
+  - name: disk_l90_bplus15
+    description: "Mid-latitude northern disk control near l=90, b=+15."
+    galactic_l_center: 90.0
+    galactic_b_center: 15.0
+    disk_zone: off_plane
+    latitude_stratum: mid_latitude
+    extinction_expectation: low
+    ra_min: 296.798933
+    ra_max: 298.639578
+    dec_min: 56.592281
+    dec_max: 57.592281
+  - name: disk_l270_bminus15
+    description: "Mid-latitude southern disk control near l=270, b=-15."
+    galactic_l_center: 270.0
+    galactic_b_center: -15.0
+    disk_zone: off_plane
+    latitude_stratum: mid_latitude
+    extinction_expectation: low
+    ra_min: 116.798933
+    ra_max: 118.639578
+    dec_min: -57.592281
+    dec_max: -56.592281
+  - name: outer_l180_bplus30
+    description: "High-latitude outer-disk control near l=180, b=+30."
+    galactic_l_center: 180.0
+    galactic_b_center: 30.0
+    disk_zone: off_plane
+    latitude_stratum: high_latitude
+    extinction_expectation: low
+    ra_min: 119.456980
+    ra_max: 121.424230
+    dec_min: 39.566198
+    dec_max: 41.066198
+  - name: legacy_high_latitude
+    description: "Very-high-latitude southern control near l=303, b=-54.6."
+    galactic_l_center: 303.2
+    galactic_b_center: -54.6
+    disk_zone: off_plane
+    latitude_stratum: very_high_latitude
+    extinction_expectation: very_low
+    ra_min: 12.0
+    ra_max: 13.0
+    dec_min: -63.0
+    dec_max: -62.0
+    legacy_csv: data/raw/prediction_pool/ra010p00_015p00__dec-65p00_-60p00.csv
+    legacy_db: data/databases/prediction_pool_5x5_partial.duckdb
+
+exact_locus_variants:
+  - strict_photometry
+  - strict_parallax_soft
+  - strict_poe_2
+  - strict_poe_3
+  - relaxed_photometry
+  - relaxed_parallax_soft
+  - relaxed_poe_2
+  - relaxed_poe_3
+
+magnitude_bins: [0, 12, 14, 16, 18, 30]
+magnitude_labels: ["G<12", "12<=G<14", "14<=G<16", "16<=G<18", "G>=18"]
+
+legacy_lineage:
+  raw_dir: data/raw/prediction_pool
+  partial_db: data/databases/prediction_pool_5x5_partial.duckdb
+  main_db: data/databases/prediction_pool.duckdb
+
+outputs:
+  raw_dir_template: data/raw/prediction_pool_locus_audit/{run_id}
+  data_dir_template: data/processed/prediction_pool_locus_audit/{run_id}
+  report_dir_template: reports/analysis/prediction_pool_locus_audit/{run_id}

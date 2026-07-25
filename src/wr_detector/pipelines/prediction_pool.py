@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock, local
 from time import sleep
-from typing import Any
+from typing import Any, Mapping
 
 import duckdb
 import pandas as pd
@@ -98,6 +98,7 @@ def build_prediction_pool(
     row_limit: int | None = None,
 ) -> dict[str, Any]:
     config = load_prediction_pool_config(config_path)
+    assert_prediction_pool_build_allowed(config, dry_run=dry_run)
     db_path = resolve_path(config["output_db"])
     staging_dir = resolve_path(config["staging_dir"])
     output_dir = resolve_path(config["output_dir"])
@@ -213,6 +214,28 @@ def build_prediction_pool(
         "tiles_skipped_for_limit": skipped_for_limit,
         "local_storage_bytes": local_storage_bytes(db_path, staging_dir, output_dir),
     }
+
+
+def assert_prediction_pool_build_allowed(
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+) -> None:
+    """Prevent mutation of a pool configuration registered as legacy/read-only."""
+    build = config.get("build", {})
+    status = str(build.get("status", "")).strip().lower()
+    mutation_allowed = bool(build.get("allow_mutation", True))
+    if not dry_run and (status == "legacy_read_only" or not mutation_allowed):
+        pool_build_id = str(build.get("pool_build_id", "unregistered_legacy_pool"))
+        policy = str(build.get("eligibility_policy", "unknown"))
+        raise RuntimeError(
+            f"Prediction-pool build {pool_build_id!r} is read-only "
+            f"(eligibility_policy={policy!r}). The current full-build pipeline "
+            "still implements the legacy aggregate and must not overwrite this pool. "
+            "Use --dry-run for inspection or audit-prediction-pool for read-only review. "
+            "A separate exact-union build configuration must be implemented and validated "
+            "before the Gaia-scale reconstruction."
+        )
 
 
 def audit_prediction_pool(db_path: str | Path) -> dict[str, Any]:
@@ -409,6 +432,7 @@ def build_prediction_pool_adql(
     config: dict[str, Any],
     *,
     row_limit: int | None = None,
+    extra_gaia_columns: Mapping[str, str] | None = None,
 ) -> str:
     top = f"TOP {int(row_limit)} " if row_limit is not None else ""
     quality = build_quality_predicate(config)
@@ -435,13 +459,18 @@ def build_prediction_pool_adql(
     if astrometry:
         predicates.append(astrometry)
     where = "\n        AND ".join(f"({p})" for p in predicates if p)
+    extra_select = ""
+    for alias, column in (extra_gaia_columns or {}).items():
+        if not alias.replace("_", "").isalnum() or not column.replace("_", "").isalnum():
+            raise ValueError(f"Invalid Gaia column or alias: {column!r} AS {alias!r}")
+        extra_select += f"        gaia.{column} AS {alias},\n"
     return f"""
     SELECT {top}
         gaia.source_id,
         gaia.designation AS gaia_designation,
         gaia.ra,
         gaia.dec,
-        gaia.phot_g_mean_mag AS G,
+{extra_select}        gaia.phot_g_mean_mag AS G,
         gaia.phot_bp_mean_mag AS BP,
         gaia.phot_rp_mean_mag AS RP,
         gaia.phot_g_mean_flux AS G_flux,
@@ -541,10 +570,12 @@ def download_prediction_tile(
     config: dict[str, Any],
     staging_dir: Path,
     row_limit: int | None,
+    *,
+    query_override: str | None = None,
 ) -> tuple[Path, str | None]:
     gaia_client = get_thread_gaia_tap_client(config)
     credentials_file = get_gaia_credentials_file(config)
-    query = build_prediction_pool_adql(tile, envelope, config, row_limit=row_limit)
+    query = query_override or build_prediction_pool_adql(tile, envelope, config, row_limit=row_limit)
     output_file = staging_dir / f"{tile.tile_id}.csv"
     max_retries = max(1, int(config.get("gaia", {}).get("max_retries", 1)))
     retry_sleep_seconds = max(0, int(config.get("gaia", {}).get("retry_sleep_seconds", 0)))

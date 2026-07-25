@@ -9,6 +9,16 @@ venv/
 Avances.md
 .env
 .claude/
+.agents/
+.codex/
+.openai/
+AGENTS.md
+skills/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
 data.zip
 *.zip
 
@@ -18,10 +28,14 @@ data/raw/reference/*.html
 data/raw/reference/*.csv
 data/raw/simbad_negative/*.csv
 data/raw/prediction_pool/*
+data/raw/prediction_pool_locus_pilot/*
+data/raw/prediction_pool_locus_audit/*
 data/processed/reference/*.parquet
 data/processed/simbad_negative/*.parquet
 data/processed/modeling/*.parquet
 data/processed/prediction_pool/*
+data/processed/prediction_pool_locus_pilot/*
+data/processed/prediction_pool_locus_audit/*
 data/interim/reference/*
 data/interim/simbad_negative/*
 
@@ -36,5 +50,7 @@ reports/modeling/figures/*
 reports/modeling/runs/*
 reports/modeling/second_layer/runs/*
 reports/modeling/artifacts/*
+reports/analysis/prediction_pool_locus_pilot/*
+reports/analysis/prediction_pool_locus_audit/*
 !reports/figures/.gitkeep
 !reports/tables/.gitkeep

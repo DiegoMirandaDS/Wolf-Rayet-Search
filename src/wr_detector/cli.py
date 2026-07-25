@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from wr_detector.analysis.prediction_pool_locus_pilot import run_prediction_pool_locus_pilot
 from wr_detector.db import audit_reference_database
 from wr_detector.features import export_color_locus_datasets, export_reference_datasets, export_simbad_negative_datasets
 from wr_detector.modeling import (
@@ -174,6 +175,32 @@ def audit_prediction_pool_command(
     typer.echo("exclusions:")
     for label, count in result["exclusions"].items():
         typer.echo(f"  {label}: {count}")
+
+
+@app.command("pilot-prediction-pool-locus")
+def pilot_prediction_pool_locus_command(
+    config: Path = typer.Option(Path("configs/prediction_pool_locus_pilot.yaml"), "--config", "-c"),
+    skip_download: bool = typer.Option(False, "--skip-download", help="Reuse persistent pilot CSV files instead of querying Gaia."),
+) -> None:
+    result = run_prediction_pool_locus_pilot(config, download=not skip_download, verbose=True)
+    typer.echo("Prediction-pool locus pilot completed.")
+    for key, value in result.items():
+        typer.echo(f"{key}: {value}")
+
+
+@app.command("audit-prediction-pool-exact-union")
+def audit_prediction_pool_exact_union_command(
+    config: Path = typer.Option(Path("configs/prediction_pool_locus_audit.yaml"), "--config", "-c"),
+    skip_download: bool = typer.Option(
+        False,
+        "--skip-download",
+        help="Reuse persistent audit CSV files instead of querying Gaia.",
+    ),
+) -> None:
+    result = run_prediction_pool_locus_pilot(config, download=not skip_download, verbose=True)
+    typer.echo("Prediction-pool exact-union audit completed.")
+    for key, value in result.items():
+        typer.echo(f"{key}: {value}")
 
 
 @app.command("benchmark-models")

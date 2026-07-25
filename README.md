@@ -1,47 +1,51 @@
 # Wolf-Rayet Detector
 
-Wolf-Rayet Detector is a reproducible Python pipeline for building a curated positive sample of known Galactic Wolf-Rayet (WR) stars, constructing a controlled SIMBAD non-WR negative sample, training candidate-ranking models, and preparing a Gaia-scale prediction pool for later candidate search.
+Wolf-Rayet Detector is a reproducible Python project for ranking Galactic
+Wolf-Rayet (WR) candidates from Gaia DR3, 2MASS and WISE data.
 
-The project is currently in a pre-prediction modelling stage: the goal is to select a scientifically defensible model and operating policy before scoring tens of millions of Gaia sources.
+The project connects four pieces that are often treated separately: catalogue
+construction, a physically constrained colour-locus, rare-object model
+selection and a Gaia-scale prediction pool. The output is a ranked list for
+astronomical follow-up, not an automatic claim that a source is a new WR star.
 
-Historical exploratory work lives in `legacy/`. Reproducible code lives in `src/wr_detector`, configuration in `configs/`, notebooks in `notebooks/`, generated data in `data/`, and generated model/report artifacts in `reports/`.
+## Current status
 
-## Scientific Scope
+The reference, negative-sample, colour-locus and modelling pipelines are
+implemented. The first Gaia-scale prediction pool was also built, but an
+independent audit found that its local `aggregated_mean_fit` filter is not a
+superset of the exact model-variant loci:
 
-The current pipeline does not claim discovery of new WR stars by itself. It builds:
+- 44,469 Gaia sources were evaluated in 18 stratified sky regions;
+- the aggregate rejected 1,960 of 26,369 sources accepted by the compatible
+  exact union: 7.43%;
+- regional discrepancies reached 18.90%;
+- two known WR regression controls were affected;
+- seven variants showed misses in Gaia data, and constructive colour
+  counterexamples refuted a superset guarantee for all eight variants.
 
-- a positive reference set from the Crowther/GWRC Galactic WR catalogue;
-- Gaia DR3, 2MASS and WISE photometric/astrometric features;
-- a SIMBAD non-WR negative sample with known WR exclusions;
-- reproducible dataset variants for model comparison;
-- model-selection diagnostics designed for rare-object candidate ranking;
-- a tiled Gaia prediction pool that can be scored after model selection.
+The existing 58,037,788-row pool is therefore registered as a read-only legacy
+build. It remains useful for auditing and engineering checks, but it is not
+approved for definitive candidate scoring. The next pool will be built in
+parallel from the broad acquisition envelope and will persist the exact
+compatible-variant mask for every source.
 
-WR detection is treated as a **ranking problem**. In a Gaia-scale pool, even a small false-positive rate can generate many candidates, so top-K recovery, average precision and low-FPR behavior are more important than ordinary accuracy.
+No full-sky exact-union build has been launched yet.
 
-## Setup
+## Scientific workflow
 
-```powershell
-python -m pip install -e ".[dev]"
-```
+### Phase 1 — Known WR reference catalogue
 
-With Conda/Mamba:
+The reference pipeline starts from the Galactic WR catalogue, keeps records
+with explicit Gaia DR3 aliases and enriches them with:
 
-```powershell
-mamba env create -f environment.yml
-mamba activate wolf-rayet-detector
-python -m pip install -e .
-```
+- Gaia DR3 astrometry and `G/BP/RP` photometry;
+- 2MASS `J/H/Ks`;
+- WISE `W1/W2`, while retaining `W3/W4` when available;
+- VizieR fallback matches when the Gaia crossmatch tables do not provide the
+  required 2MASS or WISE row.
 
-Install optional XGBoost support for the current model sweep:
-
-```powershell
-python -m pip install -e ".[dev,modeling]"
-```
-
-## Data Pipelines
-
-### Reference WR Catalogue
+The result is stored in a DuckDB database with catalogue snapshots, match
+provenance and processed Parquet variants.
 
 ```powershell
 wr-detector build-reference --config configs/reference.yaml
@@ -49,258 +53,271 @@ wr-detector audit-reference --db data/databases/wr_reference.duckdb
 wr-detector export-reference-datasets --config configs/filters.yaml
 ```
 
-`build-reference` downloads the GWRC/Crowther table, keeps catalogue rows with explicit Gaia DR3 aliases, queries Gaia DR3, enriches with 2MASS and WISE photometry, uses VizieR fallback matching where needed, and writes `data/databases/wr_reference.duckdb`.
+### Phase 2 — Controlled non-WR sample
 
-### SIMBAD Negative Sample
+The negative sample is built from configured SIMBAD object types. Known WR
+`source_id` values are excluded before export, and the same Gaia/2MASS/WISE
+feature construction is used for positives and negatives.
 
 ```powershell
 wr-detector build-simbad-negative --config configs/simbad_negative.yaml
 wr-detector export-simbad-negative-datasets --config configs/filters.yaml
 ```
 
-`build-simbad-negative` queries configured SIMBAD non-WR object types, keeps Gaia DR3-identified sources, excludes known WR objects, enriches with Gaia/2MASS/WISE, and exports the same variant matrix as the WR reference sample.
+This is a controlled comparison sample, not a complete representation of every
+non-WR population in the Galaxy. That distinction matters when interpreting
+precision and false-positive estimates.
 
-### Color-Locus Annotation
+### Phase 3 — WR colour-locus
+
+Robust colour-colour regressions are fitted on WR reference variants. Only
+intra-survey colours define the locus:
+
+- Gaia: `G_BP`, `G_RP`, `BP_RP`;
+- 2MASS: `J_H`, `J_K`, `H_K`.
+
+`W1_W2` is retained as a model feature, but WISE does not define a regression
+plane because `W3/W4` are not required. Cross-survey colours are deliberately
+excluded from the locus to reduce sensitivity to epoch, calibration and
+crossmatch systematics.
+
+The export keeps every row and adds locus diagnostics. Training filters through
+`color_locus_keep`; the source artefacts remain auditable.
 
 ```powershell
 wr-detector export-color-locus --config configs/filters.yaml
 ```
 
-The color-locus step fits robust intra-mission color-color relations on WR reference variants and annotates both WR and SIMBAD-negative rows.
+### Phase 4 — Dataset variants and model training
 
-Important design choices:
+Each dataset variant combines a photometric family and an astrometric subset.
 
-- Gaia color planes use `G_BP`, `G_RP`, `BP_RP`.
-- 2MASS color planes use `J_H`, `J_K`, `H_K`.
-- WISE contributes `W1_W2` as a feature, but WISE does not define a Phase 2 color-color regression because W3/W4 are not used.
-- Cross-mission colors such as Gaia-2MASS, Gaia-WISE and 2MASS-WISE are not used for Phase 2 color-locus cuts.
-- The export keeps all rows and adds diagnostics; model training later filters with `color_locus_keep`.
+| Component | Definition |
+|---|---|
+| `strict` | Required 2MASS and WISE bands have quality A |
+| `relaxed` | Required 2MASS and WISE bands have quality A or B |
+| `photometry` | No parallax restriction |
+| `parallax_soft` | `parallax > 0` |
+| `poe_2` | `parallax > 0` and `parallax_over_error >= 2` |
+| `poe_3` | `parallax > 0` and `parallax_over_error >= 3` |
 
-## Dataset Variants
+The default sweep uses the eight `strict`/`relaxed` combinations with
+`photometry`, `parallax_soft`, `poe_2` and `poe_3`.
 
-Variants combine a photometric family with an astrometric subset.
+The split is stable by `source_id` hash and stratified by class:
 
-Photometric families:
+1. approximately 20% of WR and 20% of negatives enter holdout;
+2. all remaining WR enter training;
+3. training negatives are reduced to the configured ratio, currently 10:1;
+4. unused non-holdout negatives form `threshold_calibration`.
 
-- `strict`: Gaia `G/BP/RP`, 2MASS `J/H/Ks`, WISE `W1/W2`, requiring A-quality 2MASS/WISE required bands.
-- `relaxed`: same required photometry, accepting A or B quality in required 2MASS/WISE bands.
-
-Astrometric subsets:
-
-- `photometry`: no parallax or parallax-over-error restriction.
-- `parallax_soft`: `parallax > 0`.
-- `poe_1`, `poe_2`, `poe_3`, `poe_5`: `parallax > 0` plus increasing `parallax_over_error` thresholds.
-
-The current default modelling sweep uses:
-
-- `strict_photometry`
-- `strict_parallax_soft`
-- `strict_poe_2`
-- `strict_poe_3`
-- `relaxed_photometry`
-- `relaxed_parallax_soft`
-- `relaxed_poe_2`
-- `relaxed_poe_3`
-
-`poe_5` is exported but excluded from the default model sweep because it is more restrictive and reduces the scarce WR positive sample.
-
-## Modelling Workflow
-
-### Negative Reduction
+The holdout is never used for fitting. `threshold_calibration` contains
+negatives only and is used as a false-positive stress test.
 
 ```powershell
 wr-detector reduce-negatives --config configs/models.yaml
-```
-
-The current split policy is:
-
-1. Split the full WR + SIMBAD-negative variant by stable `source_id` hash.
-2. Stratify by target class so approximately 20% of WR and 20% of negatives enter holdout.
-3. Keep all non-holdout WR in train.
-4. Sample non-holdout negatives to `10x` WR for train using color-quantile stratification.
-5. Store remaining non-holdout negatives as `threshold_calibration`.
-
-This gives:
-
-- `train`: all train WR plus representative reduced negatives;
-- `threshold_calibration`: negatives only, used to stress-test false positives and threshold behavior;
-- `holdout`: WR and negatives never used for fitting or calibration.
-
-Larger negative-ratio experiments are available but not default:
-
-```powershell
-wr-detector reduce-negatives --config configs/models.yaml --negative-ratio 20 --negative-ratio 50 --negative-ratio all_train_negatives
-```
-
-### Training
-
-```powershell
 wr-detector train-models --config configs/models.yaml --run-id run_YYYYMMDD_science_v1
 ```
 
-Resume an interrupted run:
+Interrupted runs are resumable:
 
 ```powershell
-wr-detector train-models --config configs/models.yaml --run-id run_YYYYMMDD_science_v1 --resume-run
+wr-detector train-models `
+  --config configs/models.yaml `
+  --run-id run_YYYYMMDD_science_v1 `
+  --resume-run
 ```
 
-Current default grid from `configs/models.yaml`:
+Model search optimizes average precision. Selection prioritizes candidate
+recovery within practical follow-up budgets, low-FPR behaviour and stability
+across train, cross-validation and holdout. Ordinary accuracy is not an
+appropriate objective for a pool containing tens of millions of sources.
 
-- 8 dataset variants;
-- 2 feature sets: `colors_parallax`, `colors_parallax_error`;
-- 3 models: Random Forest, HistGradientBoosting, XGBoost;
-- 2 samplers: SMOTE, SMOTE-ENN;
-- 1 negative ratio: `10x`;
-- total: 96 configurations.
+The current grid compares Random Forest, HistGradientBoosting and XGBoost with
+`SMOTE` and `SMOTE-ENN`. Adding an unresampled `none` baseline is part of the
+next modelling revision.
 
-Feature sets:
+### Phase 5 — Validation and model inspection
 
-- `colors_parallax`: `BP_RP`, `G_BP`, `G_RP`, `J_H`, `J_K`, `H_K`, `W1_W2`, `parallax`.
-- `colors_parallax_error`: the same features plus `parallax_error` and `parallax_over_error`.
-
-Model search uses `BayesSearchCV` optimized by average precision. SMOTE-style samplers live inside the imbalanced-learn pipeline, so resampling occurs only inside cross-validation folds. Overfit warnings are stored as multicomponent diagnostics: the legacy F2 gap is retained, and new runs also report train-CV average-precision gap, CV-holdout average-precision drop, holdout/CV average-precision ratio, component warning flags and an `overfit_risk_score`.
-
-### Run IDs And Artifacts
-
-Every training run has a `run_id`. Run-specific artifacts are written to:
-
-```text
-reports/modeling/runs/{run_id}/
-```
-
-The run CSV is updated after every completed configuration:
-
-```text
-reports/modeling/runs/{run_id}/model_training_results.csv
-```
-
-The canonical experiment history is:
-
-```text
-data/databases/training_history.duckdb
-```
-
-The compatibility/latest export is:
-
-```text
-reports/tables/model_training_results.csv
-```
-
-Heavy `.joblib` model files and figures remain on disk and are referenced from DuckDB. Prediction CSVs, feature-importance CSVs and JSON sidecars can be compacted into DuckDB and cleaned after sync:
-
-```powershell
-wr-detector clean-model-artifacts --config configs/models.yaml --remove-db-backed-sidecars
-wr-detector clean-model-artifacts --config configs/models.yaml --remove-db-backed-sidecars --apply
-```
-
-### Interactive Model Explorer
-
-Install the optional visualization extra and launch the local Streamlit explorer:
-
-```powershell
-pip install -e ".[viz]"
-wr-detector explore-models --config configs/models.yaml
-```
-
-The explorer reads `data/databases/training_history.duckdb` in read-only mode and joins per-source predictions with `wr_reference.duckdb` and `simbad_negative.duckdb` for case-level identity. It is a multipage app:
-
-- **Overview**: run-level headline numbers and the best model per dataset variant.
-- **Compare models**: filterable ranking table, metric comparison, recovery-by-budget curves, dataset matrix and stability gaps. Selecting a table row sets the model inspected by the other pages.
-- **Model detail**: per-split stability, feature importance, tuned hyperparameters and live holdout PR/ROC/confusion charts computed from synchronized predictions (saved matplotlib figures remain on disk and are listed as artifact paths).
-- **Case review**: case-by-case inspection of holdout or train (out-of-fold) predictions, including top candidates, false positives and missed WR, with WR spectral types, SIMBAD object types, photometry, a color-magnitude context plot, cross-model recurrence and SIMBAD/Aladin/ESASky links per source.
-- **Statistics**: WR recovery by broad subtype (WN/WC/WO), false-positive composition by SIMBAD type, score distributions, and run-wide tables of recurrent contaminants and persistently missed WR across all models.
-- **Validation layers**: reviews second-layer (and future layer) validation runs discovered from `reports/modeling/second_layer/runs/`, with retention vs negative-pass-rate tradeoffs per method and subtype. Shows a training hint when no layer runs exist yet.
-
-Pick a color theme with `--theme` (`dracula` default, `nebula`, `slate`):
-
-```powershell
-wr-detector explore-models --config configs/models.yaml --theme nebula
-```
-
-## Model Selection Policy
-
-The default model-selection view prioritizes:
-
-1. WR recovered in top candidate budgets, especially top 50, top 100 and top 500.
-2. Holdout average precision.
-3. Recall at fixed false-positive rates: 0.1%, 0.5% and 1%.
-4. Precision-recall curve shape.
-5. Train/CV/holdout stability, overfit risk flags and overfitting gaps.
-6. Feature importance and physical plausibility.
-
-Thresholded precision, recall and F-score are reported, but a single thresholded F-score is not the only decision criterion. Threshold precision floors are warnings about an operating point, not automatic rejection of a useful ranking model.
-
-Second-layer validation with autoencoders, Deep SVDD or other one-class models is treated as an experimental re-ranking layer over top first-stage candidates. It should start with enriched tabular features already available in the prediction pool, including magnitude/flux errors, `W3/W4`, proper motions and color-locus diagnostics, and should be evaluated against simpler one-class baselines before becoming operational.
-
-Train the current non-deep second-layer validators:
+The optional second layer evaluates whether top first-stage candidates remain
+compatible with WN or WC reference distributions. Its Gaussian-mixture,
+one-class SVM, Isolation Forest and robust-covariance models are re-ranking
+tools, not hard rejection gates.
 
 ```powershell
 wr-detector train-second-layer --config configs/second_layer.yaml
-wr-detector train-second-layer --config configs/second_layer.yaml --variant strict_poe_3 --feature-set current_colors --method gaussian_mixture --subtype WN --run-id run_YYYYMMDD_second_layer
 ```
 
-This fits subtype-aware one-class validators for WN/WC and reports holdout positive retention, negative pass rates and calibration-negative pass rates. The layer is for compatibility scoring and candidate re-ranking, not a hard rejection gate.
-
-Second-layer runs are linked to first-layer runs through **data lineage, not run ids**: each result records the reduced-dataset path and SHA-256, the models-config hash (split policy) and the color-locus filter status. Results auto-sync to `second_layer_runs`/`second_layer_results` in `data/databases/training_history.duckdb`; backfill an unsynced CSV run with:
+The Streamlit explorer reads experiment history from DuckDB and provides
+run-level comparison, case review, subtype recovery, contaminant analysis and
+validation-layer diagnostics.
 
 ```powershell
-wr-detector sync-second-layer-history --run-id run_YYYYMMDD_second_layer
+python -m pip install -e ".[viz]"
+wr-detector explore-models --config configs/models.yaml
 ```
 
-Color-locus outliers are excluded before the holdout split for all layers; the second layer re-checks this defensively. See `docs/modeling_decisions.md` ("Validation-Layer Lineage And Color-Locus Policy").
+### Phase 6 — Gaia prediction pool
 
-See `docs/modeling_decisions.md` for the current modelling rationale.
+The acquisition stage queries Gaia in sky tiles using a broad colour envelope.
+The corrected operational policy is:
 
-The latest code and notebook audit is documented in `docs/code_audit_2026-06-24.md`.
+```text
+broad acquisition envelope
+→ evaluate every compatible exact variant
+→ retain a source if at least one variant accepts it
+→ persist the compatible-variant bitmask
+→ score each model only on sources carrying its variant bit
+```
 
-## Prediction Pool
+The bit contract, lineage requirements, resume behaviour and storage decision
+are specified in
+[`docs/prediction_pool_exact_union_design.md`](docs/prediction_pool_exact_union_design.md).
 
-Build or audit the Gaia-scale prediction pool:
+The old configuration is intentionally blocked for mutation because it still
+uses `aggregated_mean_fit`. These commands are safe:
 
 ```powershell
+# Inspect the legacy query plan without launching Gaia jobs
 wr-detector build-prediction-pool --config configs/prediction_pool.yaml --dry-run
-wr-detector build-prediction-pool --config configs/prediction_pool.yaml
+
+# Audit the existing pool
 wr-detector audit-prediction-pool --db data/databases/prediction_pool.duckdb
+
+# Reproduce the 18-region exact-union audit from its persistent acquisitions
+wr-detector audit-prediction-pool-exact-union `
+  --config configs/prediction_pool_locus_audit.yaml `
+  --skip-download
 ```
 
-The pool is tiled on sky coordinates, excludes known reference/SIMBAD sources by `source_id`, and writes parquet tiles plus `data/databases/prediction_pool.duckdb`. It is not used for training. It should be scored only after selecting and auditing a training run.
+Do not delete the legacy DuckDB or its 675 Parquet tiles. Do not run the
+non-dry-run legacy builder. A separate full-build configuration will be
+published only after the exact-union storage path and manifest contract are
+integrated and pass tile-level resume tests.
 
-Prediction-pool tile consumption is centralized through DuckDB views:
+## Repository layout
 
-- `prediction_pool_sources`: all source rows from completed parquet tiles.
-- `prediction_pool_effective_tiles`: completed parquet tiles that should be iterated during scoring.
-- `prediction_pool_tile_coverage`: registered tile coverage, including completed effective tiles, subdivided parent tiles and incomplete tiles.
+```text
+configs/                    Versioned pipeline and model configuration
+docs/                       Scientific decisions, audits and pool design
+notebooks/                  EDA and audit notebooks; never source-of-truth logic
+src/wr_detector/
+  catalogs/                 Gaia, GWRC, SIMBAD and VizieR access
+  pipelines/                Reference, negative and prediction-pool pipelines
+  modeling/                 Splits, reduction, training, evaluation and history
+  analysis/                 Reproducible audit calculations
+  apps/                     Streamlit Model Explorer
+tests/                      Unit and integration tests
+data/                       Local generated data; excluded from Git
+reports/                    Local run artefacts; excluded from Git
+legacy/                     Historical material kept for context
+```
 
-If a large tile fails and is subdivided, the parent tile is marked `skipped` with `subdivided_into_subtiles`; the completed subtiles appear in `prediction_pool_effective_tiles` and their rows appear in `prediction_pool_sources`. Scoring code should iterate `prediction_pool_effective_tiles`, not raw `prediction_pool_tiles`.
+DuckDB is the canonical store for experiment history and pool metadata.
+Parquet is used for large source tables. Notebooks read those artefacts for
+inspection; they do not redefine filtering or training behaviour.
 
-## Notebooks
+## Installation
 
-Notebooks are audit and visualization artifacts. They should not contain source-of-truth pipeline logic.
-
-- `notebooks/00_Available_photometry_analysis.ipynb`: audits photometric completeness and variant-design tradeoffs.
-- `notebooks/01_reference_catalog_audit.ipynb`: audits reference catalogue provenance, table counts, crossmatch logs, export sizes and feature coverage.
-- `notebooks/02_color_eda_linear_cuts.ipynb`: audits robust color-locus regression assumptions, residuals, outlier flags and configured intra-mission planes.
-- `notebooks/03_negative_reduction_audit.ipynb`: audits reduced modelling datasets, train/calibration/holdout dimensions and negative-reduction representativeness.
-- `notebooks/04_model_training_results.ipynb`: audits a selected `TRAINING_RUN_ID` from DuckDB; use `wr-detector explore-models` for routine interactive comparison.
-- `notebooks/04_overfitting_and_tree_diagnostics.ipynb`: audits overfitting, tree/boosting complexity, feature importance and saved validation artifacts for a selected `TRAINING_RUN_ID`.
-- `notebooks/05_prediction_pool_audit.ipynb`: audits prediction-pool coverage, failed tiles, known-source exclusions and distribution comparison before model scoring.
-- `notebooks/06_dimensionality_audit.ipynb`: explores PCA/UMAP projections for reduced modelling datasets, synchronized model predictions, top-K negatives and false-positive populations before promoting dimensionality views to the Model Explorer.
-
-## Useful Outputs
-
-- Raw reference snapshots: `data/raw/reference/`
-- Reference DB: `data/databases/wr_reference.duckdb`
-- SIMBAD negative DB: `data/databases/simbad_negative.duckdb`
-- Prediction-pool DB: `data/databases/prediction_pool.duckdb`
-- Processed WR variants: `data/processed/reference/`
-- Processed SIMBAD-negative variants: `data/processed/simbad_negative/`
-- Reduced modelling datasets: `data/processed/modeling/`
-- Training history: `data/databases/training_history.duckdb`
-- Run artifacts: `reports/modeling/runs/{run_id}/`
-
-## Development Checks
+Python 3.11 or newer is required.
 
 ```powershell
-pytest
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev,modeling,viz]"
+```
+
+Alternatively:
+
+```powershell
+mamba env create -f environment.yml
+mamba activate wolf-rayet-detector
+python -m pip install -e ".[dev,modeling,viz]"
+```
+
+Gaia archive credentials are optional for public queries. Authenticated
+long-running jobs use a local credentials file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit `.env` so `GAIA_CREDENTIALS_FILE` points to your local Gaia credentials
+file. Neither `.env` nor the credential file is versioned.
+
+## Reproducing the implemented pipeline
+
+Run the stages in this order:
+
+```powershell
+wr-detector build-reference --config configs/reference.yaml
+wr-detector audit-reference --db data/databases/wr_reference.duckdb
+wr-detector export-reference-datasets --config configs/filters.yaml
+
+wr-detector build-simbad-negative --config configs/simbad_negative.yaml
+wr-detector export-simbad-negative-datasets --config configs/filters.yaml
+
+wr-detector export-color-locus --config configs/filters.yaml
+wr-detector reduce-negatives --config configs/models.yaml
+wr-detector train-models --config configs/models.yaml --run-id run_YYYYMMDD_science_v1
+wr-detector train-second-layer --config configs/second_layer.yaml
+```
+
+Large catalogue queries and model grids can take considerable time. Every
+long-running stage writes run- or tile-level state so work can be inspected or
+resumed.
+
+## Main artefacts
+
+Generated artefacts stay outside Git:
+
+| Artefact | Local path |
+|---|---|
+| WR reference database | `data/databases/wr_reference.duckdb` |
+| SIMBAD negative database | `data/databases/simbad_negative.duckdb` |
+| Training history | `data/databases/training_history.duckdb` |
+| Legacy prediction pool | `data/databases/prediction_pool.duckdb` |
+| Reduced modelling datasets | `data/processed/modeling/` |
+| Model runs | `reports/modeling/runs/{run_id}/` |
+| Exact-union audit | `reports/analysis/prediction_pool_locus_audit/` |
+
+Run IDs, dataset hashes, configuration hashes and source-level predictions are
+used to keep comparisons tied to the data that produced them.
+
+## Audit notebooks
+
+The numbered notebooks document the scientific checks in pipeline order:
+
+- `00`: photometric availability and dataset-family trade-offs;
+- `01`: reference-catalogue provenance and feature coverage;
+- `02`: colour-locus fits, residuals and outliers;
+- `03`: negative reduction and split composition;
+- `04`: model ranking and overfitting diagnostics;
+- `05`: legacy prediction-pool coverage;
+- `06`: PCA/UMAP exploratory structure;
+- `07`: bounded aggregate-versus-exact pilot;
+- `08`: expanded 18-region exact-union audit and rebuild decision.
+
+## Development checks
+
+```powershell
+python -m pytest
 python -m compileall src\wr_detector
 ```
+
+## Immediate roadmap
+
+The next work should be completed in this order:
+
+1. integrate exact-union evaluation and immutable acquisition Parquet into the
+   full prediction-pool builder;
+2. validate a small resumable build, checksums, manifests and model-bit
+   filtering before launching full-sky queries;
+3. add an unresampled `none` baseline and top-K/candidates-per-WR metrics;
+4. finish the OOF threshold-selection audit;
+5. select the operational first-layer and validation-layer pairing;
+6. build the new pool in parallel, then begin definitive scoring.
+
+The legacy pool remains available throughout this transition and is never
+overwritten.

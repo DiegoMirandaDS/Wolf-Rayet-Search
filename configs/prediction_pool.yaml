@@ -1,6 +1,12 @@
 paths_config: configs/paths.yaml
 filters_config: configs/filters.yaml
 
+build:
+  pool_build_id: pool_legacy_aggregated_mean_fit_20260609_v1
+  status: legacy_read_only
+  eligibility_policy: aggregated_mean_fit
+  allow_mutation: false
+
 output_db: data/databases/prediction_pool.duckdb
 staging_dir: data/raw/prediction_pool
 output_dir: data/processed/prediction_pool/tiles

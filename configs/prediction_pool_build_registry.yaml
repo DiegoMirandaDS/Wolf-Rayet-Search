@@ -1,0 +1,26 @@
+schema_version: prediction_pool_build_registry_v1
+
+builds:
+  - pool_build_id: pool_legacy_aggregated_mean_fit_20260609_v1
+    status: legacy_read_only
+    eligibility_policy: aggregated_mean_fit
+    scientific_use: audit_only_not_approved_for_definitive_scoring
+    limitation: >-
+      The local mean-slope/mean-intercept aggregate is not a superset of the
+      compatible exact-locus union and irreversibly omitted eligible sources.
+    database_path: data/databases/prediction_pool.duckdb
+    database_sha256_observed_20260722: f61b312cf38889da1dd6512637448af6fdc714dfcfb17dbeb4e5d9b469fd78f0
+    config_path: configs/prediction_pool.yaml
+    config_sha256_observed_before_read_only_guard: f52b3b9d4043a1b1d4ca1574ea863891dd3e2f10671cb13c6e3165f7ad32c21b
+    current_read_only_config_sha256: 8d5cc16fbf84f48881e65cab0b8e8dfc0b33968317316b5bdcff51a14dda4e19
+    code_git_commit_at_audit: 2b88bf2e4eb63230df643d9af13a3fddd0ec4db2
+    source_rows: 58037788
+    effective_tiles: 675
+    parquet_bytes: 10830232670
+    raw_acquisition_retained: false
+    exact_variant_mask_available: false
+    may_be_overwritten: false
+    superseded_by_pool_build_id:
+    audit_run_ids:
+      - pilot_20260721_locus_union_v1
+      - audit_20260722_exact_union_spatial_v1

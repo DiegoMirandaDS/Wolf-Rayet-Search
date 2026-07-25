@@ -4,12 +4,14 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pytest
 
 from wr_detector.db import write_reference_database, write_simbad_negative_database
 from wr_detector.features import add_color_features, annotate_color_locus_planes, evaluate_color_locus_planes
 from wr_detector.pipelines.prediction_pool import (
     SkyTile,
     audit_prediction_pool,
+    assert_prediction_pool_build_allowed,
     build_prediction_pool_adql,
     build_quality_predicate,
     derive_color_envelope,
@@ -151,6 +153,38 @@ def test_adql_builder_uses_required_gaia_xmatches_and_intra_mission_colors(tmp_p
     assert "gaia.parallax >" not in adql
     assert "gaia.parallax_over_error >=" not in adql
     assert "LOG(1 + ABS" not in adql
+
+
+def test_adql_builder_can_include_bounded_gaia_audit_columns(tmp_path):
+    config = _write_prediction_config(tmp_path)
+    _write_color_locus_parquet(config)
+    envelope = derive_color_envelope(config)
+    tile = SkyTile("t", 0.0, 1.0, -1.0, 0.0)
+
+    adql = build_prediction_pool_adql(
+        tile,
+        envelope,
+        config,
+        extra_gaia_columns={"galactic_l": "l", "ag_gspphot": "ag_gspphot"},
+    )
+
+    assert "gaia.l AS galactic_l" in adql
+    assert "gaia.ag_gspphot AS ag_gspphot" in adql
+
+
+def test_legacy_prediction_pool_configuration_is_read_only():
+    config = {
+        "build": {
+            "pool_build_id": "pool_legacy",
+            "status": "legacy_read_only",
+            "eligibility_policy": "aggregated_mean_fit",
+            "allow_mutation": False,
+        }
+    }
+
+    assert_prediction_pool_build_allowed(config, dry_run=True)
+    with pytest.raises(RuntimeError, match="read-only"):
+        assert_prediction_pool_build_allowed(config, dry_run=False)
 
 
 def test_quality_policy_accepts_ab_for_required_bands(tmp_path):
