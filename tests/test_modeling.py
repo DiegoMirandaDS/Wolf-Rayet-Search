@@ -21,7 +21,12 @@ from wr_detector.modeling import (
     sync_training_history,
     train_models,
 )
-from wr_detector.modeling.training import compute_model_stability_diagnostics
+from wr_detector.modeling.training import (
+    apply_positive_cohort,
+    compute_model_stability_diagnostics,
+    make_threshold_selection_scores,
+    resolve_positive_cohort,
+)
 
 
 def test_build_model_matrix_rejects_leakage_columns():
@@ -104,6 +109,143 @@ def test_sampler_is_inside_pipeline():
     assert "estimator" in pipeline.named_steps
 
 
+def test_none_sampler_uses_estimator_weighting_without_synthetic_rows():
+    pipeline = build_model_pipeline(
+        {"estimator": "random_forest"},
+        random_state=42,
+        positive_weight=10.0,
+        sampler_config={"type": "none"},
+    )
+
+    assert "sampler" not in pipeline.named_steps
+    assert (
+        pipeline.named_steps["estimator"].get_params()["class_weight"]
+        == "balanced_subsample"
+    )
+
+
+def test_sampled_random_forest_does_not_apply_class_weight_twice():
+    pipeline = build_model_pipeline(
+        {"estimator": "random_forest"},
+        random_state=42,
+        positive_weight=10.0,
+        sampler_config={"type": "smote", "k_neighbors": 3},
+    )
+
+    assert "sampler" in pipeline.named_steps
+    assert pipeline.named_steps["estimator"].get_params()["class_weight"] is None
+
+
+def test_none_sampler_uses_native_boosting_class_weights():
+    hist = build_model_pipeline(
+        {"estimator": "hist_gradient_boosting"},
+        random_state=42,
+        positive_weight=10.0,
+        sampler_config={"type": "none"},
+    )
+    sampled_hist = build_model_pipeline(
+        {"estimator": "hist_gradient_boosting"},
+        random_state=42,
+        positive_weight=10.0,
+        sampler_config={"type": "smote", "k_neighbors": 3},
+    )
+
+    assert hist.named_steps["estimator"].get_params()["class_weight"] == {
+        0: 1.0,
+        1: 10.0,
+    }
+    assert (
+        sampled_hist.named_steps["estimator"].get_params()["class_weight"]
+        is None
+    )
+
+
+def test_none_sampler_uses_xgboost_scale_pos_weight():
+    pytest.importorskip("xgboost")
+    weighted = build_model_pipeline(
+        {"estimator": "xgboost"},
+        random_state=42,
+        positive_weight=10.0,
+        sampler_config={"type": "none"},
+    )
+    sampled = build_model_pipeline(
+        {"estimator": "xgboost"},
+        random_state=42,
+        positive_weight=10.0,
+        sampler_config={"type": "smote", "k_neighbors": 3},
+    )
+
+    assert weighted.named_steps["estimator"].get_params()[
+        "scale_pos_weight"
+    ] == pytest.approx(10.0)
+    assert sampled.named_steps["estimator"].get_params()[
+        "scale_pos_weight"
+    ] == pytest.approx(1.0)
+
+
+def test_native_positive_cohort_changes_only_wr_rows(tmp_path):
+    reference_db = tmp_path / "wr_reference.duckdb"
+    with duckdb.connect(str(reference_db)) as con:
+        con.execute(
+            "CREATE TABLE twomass_matches "
+            "(source_id BIGINT, match_method VARCHAR)"
+        )
+        con.execute(
+            "CREATE TABLE wise_matches "
+            "(source_id BIGINT, match_method VARCHAR)"
+        )
+        con.executemany(
+            "INSERT INTO twomass_matches VALUES (?, ?)",
+            [(1, "gaia_xmatch"), (2, "vizier_cone"), (3, "gaia_xmatch")],
+        )
+        con.executemany(
+            "INSERT INTO wise_matches VALUES (?, ?)",
+            [(1, "gaia_xmatch"), (2, "gaia_xmatch"), (3, "vizier_cone")],
+        )
+    config = {
+        "positive_cohorts": {
+            "gaia_native_ir": {
+                "type": "gaia_reference_match_method",
+                "reference_db": str(reference_db),
+                "twomass_match_method": "gaia_xmatch",
+                "wise_match_method": "gaia_xmatch",
+            }
+        }
+    }
+    frame = pd.DataFrame(
+        {
+            "source_id": [1, 2, 3, 101, 102],
+            "target": [1, 1, 1, 0, 0],
+            "modeling_split": [
+                "train",
+                "train",
+                "train",
+                "train",
+                "train",
+            ],
+            "BP_RP": [1.0, 1.1, 1.2, -1.0, -1.1],
+        }
+    )
+
+    cohort = resolve_positive_cohort(config, "gaia_native_ir")
+    filtered, lineage = apply_positive_cohort(
+        frame,
+        cohort,
+        prefix="train_positive",
+    )
+
+    assert filtered["source_id"].tolist() == [1, 101, 102]
+    pd.testing.assert_frame_equal(
+        filtered.loc[filtered["target"].eq(0)].reset_index(drop=True),
+        frame.loc[frame["target"].eq(0)].reset_index(drop=True),
+    )
+    assert lineage["train_positive_positives_before"] == 3
+    assert lineage["train_positive_positives_after"] == 1
+    assert lineage["train_positive_negatives"] == 2
+    assert lineage["train_positive_cohort_source_ids_sha256"]
+    assert lineage["train_positive_cohort_contract_sha256"]
+
+
 def test_metrics_and_threshold_work_for_imbalanced_scores():
     y_true = [1, 0, 0, 0, 0, 0]
     y_score = [0.9, 0.8, 0.4, 0.3, 0.2, 0.1]
@@ -114,6 +256,23 @@ def test_metrics_and_threshold_work_for_imbalanced_scores():
     assert metrics["recall_wr"] == 1.0
     assert metrics["tp"] == 1
     assert "average_precision" in metrics
+
+
+def test_threshold_calibration_rejects_positive_rows():
+    class Fitted:
+        def predict_proba(self, x):
+            return pd.DataFrame(
+                {0: [0.8] * len(x), 1: [0.2] * len(x)}
+            ).to_numpy()
+
+    with pytest.raises(ValueError, match="negatives only"):
+        make_threshold_selection_scores(
+            fitted=Fitted(),
+            y_train=pd.Series([1, 0]),
+            oof_score=[0.8, 0.2],
+            x_calibration=pd.DataFrame({"x": [1.0]}),
+            y_calibration=pd.Series([1]),
+        )
 
 
 def test_ranking_metrics_report_top_k_and_fixed_fpr():
@@ -127,6 +286,7 @@ def test_ranking_metrics_report_top_k_and_fixed_fpr():
     assert metrics["precision_at_1"] == 1.0
     assert metrics["recall_at_3"] == 1.0
     assert metrics["wr_at_3"] == 2
+    assert metrics["candidates_per_wr_at_3"] == pytest.approx(1.5)
     assert "recall_at_fpr_0p34" in metrics
 
 
@@ -249,7 +409,7 @@ def test_train_models_minimal_bayes_search_outputs_metrics(tmp_path):
         config,
         variants=["strict_photometry"],
         models=["logistic_regression"],
-        samplers=["smote"],
+        samplers=["none"],
         feature_sets=["colors_only"],
         n_iter=2,
         run_id="test_train_run",
@@ -275,7 +435,26 @@ def test_train_models_minimal_bayes_search_outputs_metrics(tmp_path):
         "holdout_to_cv_average_precision_ratio",
         "overfit_warning_flag",
         "overfit_risk_score",
+        "dataset_sha256",
+        "models_config_sha256",
+        "code_worktree_sha256",
+        "feature_columns_json",
+        "imbalance_strategy",
+        "imbalance_parameter_json",
+        "training_negative_to_positive_ratio",
+        "positive_class_weight",
+        "threshold_selection_method",
+        "threshold_selection_negative_count",
+        "threshold_calibration_negative_pass_rate",
+        "threshold_calibration_score_p99",
+        "model_sha256",
+        "holdout_candidates_per_wr_at_50",
     }.issubset(results.columns)
+    assert results.loc[0, "imbalance_strategy"] == (
+        "estimator_native_class_weight"
+    )
+    assert results.loc[0, "positive_class_weight"] > 1
+    assert "class_weight" in results.loc[0, "imbalance_parameter_json"]
     for column in ["model_path", "holdout_confusion_matrix_path", "holdout_roc_curve_path", "holdout_pr_curve_path", "feature_importance_path"]:
         assert Path(results.loc[0, column]).exists()
     predictions = pd.read_csv(results.loc[0, "predictions_path"])
@@ -288,7 +467,7 @@ def test_train_models_minimal_bayes_search_outputs_metrics(tmp_path):
         config,
         variants=["strict_photometry"],
         models=["logistic_regression"],
-        samplers=["smote"],
+        samplers=["none"],
         feature_sets=["colors_only"],
         n_iter=2,
         run_id="test_train_run",
@@ -458,6 +637,70 @@ def test_training_history_syncs_results_and_cleanup_detects_orphans(tmp_path):
     assert "test_run" in set(runs["run_id"])
 
 
+def test_training_history_repairs_all_null_hash_column_type(tmp_path):
+    results_path = tmp_path / "model_training_results.csv"
+    history_path = tmp_path / "training_history.duckdb"
+    config_path = tmp_path / "models.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "outputs:",
+                f"  training_results: {results_path.as_posix()}",
+                f"  training_history_db: {history_path.as_posix()}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    base = {
+        "dataset_variant": "relaxed_photometry",
+        "feature_set": "colors_parallax_error",
+        "model": "xgboost",
+        "sampler": "none",
+    }
+    pd.DataFrame(
+        [
+            {
+                **base,
+                "train_positive_cohort_source_ids_sha256": None,
+            }
+        ]
+    ).to_csv(results_path, index=False)
+    sync_training_history(
+        config_path,
+        run_id="all_wr",
+        replace_run=True,
+    )
+
+    expected_hash = "a" * 64
+    pd.DataFrame(
+        [
+            {
+                **base,
+                "train_positive_cohort_source_ids_sha256": expected_hash,
+            }
+        ]
+    ).to_csv(results_path, index=False)
+    sync_training_history(
+        config_path,
+        run_id="native_wr",
+        replace_run=True,
+    )
+
+    with duckdb.connect(str(history_path), read_only=True) as con:
+        stored = con.execute(
+            "SELECT train_positive_cohort_source_ids_sha256 "
+            "FROM model_results WHERE run_id = 'native_wr'"
+        ).fetchone()[0]
+        column_type = con.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = 'model_results' "
+            "AND column_name = "
+            "'train_positive_cohort_source_ids_sha256'"
+        ).fetchone()[0]
+    assert stored == expected_hash
+    assert column_type == "VARCHAR"
+
+
 def _row(source_id: int, *, target_like: float) -> dict[str, float | int | str]:
     return {
         "source_id": source_id,
@@ -544,6 +787,7 @@ def _write_modeling_config(tmp_path, *, n_wr: int, n_neg: int) -> Path:
                 f"  figures_dir: {(tmp_path / 'figures').as_posix()}",
                 "  reduced_dataset_template: '{variant}_reduced.parquet'",
                 "samplers:",
+                "  none: {type: none}",
                 "  smote: {type: smote, k_neighbors: 1}",
                 "models:",
                 "  logistic_regression:",

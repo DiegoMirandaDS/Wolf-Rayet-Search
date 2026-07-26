@@ -56,6 +56,7 @@ def _result_frame(run_id: str) -> pd.DataFrame:
                 "threshold_calibration_negative_pass_rate": 0.08,
                 "dataset_path": "data/processed/modeling/strict_poe_3_reduced.parquet",
                 "dataset_sha256": "abc123",
+                "holdout_fraction": 0.2,
             }
         ]
     )
@@ -118,6 +119,26 @@ def test_sync_replace_run_overwrites(tmp_path):
     assert len(load_layer_results(layer, "run_a")) == 1
 
 
+def test_sync_repairs_integer_holdout_fraction_schema(tmp_path):
+    layer = _layer(tmp_path)
+    models_config = {"outputs": {"training_history_db": (tmp_path / "history.duckdb").as_posix()}}
+    legacy = _result_frame("legacy")
+    legacy["holdout_fraction"] = 0
+    sync_second_layer_history(models_config, legacy, run_id="legacy")
+    sync_second_layer_history(models_config, _result_frame("current"), run_id="current")
+
+    with duckdb.connect(str(layer_history_db_path(layer)), read_only=True) as con:
+        column_type = con.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='second_layer_results' AND column_name='holdout_fraction'"
+        ).fetchone()[0]
+        value = con.execute(
+            "SELECT holdout_fraction FROM second_layer_results WHERE run_id='current'"
+        ).fetchone()[0]
+    assert column_type == "DOUBLE"
+    assert value == 0.2
+
+
 def test_apply_color_locus_keep_filters_outliers():
     dataset = pd.DataFrame({"color_locus_keep": [True, False, True], "value": [1, 2, 3]})
     filtered, excluded = apply_color_locus_keep(dataset)
@@ -139,3 +160,5 @@ def test_explorer_theme_options():
     command = streamlit_model_explorer_command(Path("configs/models.yaml"), 8501, "nebula")
     assert "--theme.backgroundColor" in command
     assert command[command.index("--theme.primaryColor") + 1] == "#9d7bff"
+    assert command[command.index("--server.address") + 1] == "127.0.0.1"
+    assert command[command.index("--browser.gatherUsageStats") + 1] == "false"

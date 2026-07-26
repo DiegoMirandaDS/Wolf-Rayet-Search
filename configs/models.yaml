@@ -8,6 +8,15 @@ modeling_dataset:
   source: color_locus
   require_color_locus_keep: true
 
+positive_cohorts:
+  all:
+    type: all
+  gaia_native_ir:
+    type: gaia_reference_match_method
+    reference_db: data/databases/wr_reference.duckdb
+    twomass_match_method: gaia_xmatch
+    wise_match_method: gaia_xmatch
+
 dataset_variants:
   - strict_photometry
   - strict_parallax_soft
@@ -91,6 +100,10 @@ outputs:
   benchmark_table: reports/tables/model_benchmark.csv
 
 samplers:
+  # No synthetic examples. Estimators compensate the original imbalance with
+  # class_weight/scale_pos_weight fitted from the training fold.
+  none:
+    type: none
   smote:
     type: smote
     k_neighbors: 3

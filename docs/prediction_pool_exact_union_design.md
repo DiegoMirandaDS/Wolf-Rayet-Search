@@ -128,6 +128,20 @@ cannot recover a source after a locus change. The expanded audit measures all
 three layouts and writes `storage_estimate.csv`; these are planning estimates,
 not capacity guarantees.
 
+The production path is implemented by
+`wr_detector.pipelines.prediction_pool_exact_union`. Its v1 acquisition
+configuration expands all finite `relaxed_photometry` WR color limits with a
+versioned margin and removes server-side locus, quality and astrometric cuts.
+It stores separate `exact_locus_variant_mask`, `photometry_variant_mask`,
+`astrometry_variant_mask` and `compatible_variant_mask` columns. This lets
+future policies be audited from one physical acquisition layer.
+
+Because the expanded v1 envelope includes locus outliers and no longer requires
+A/B quality in ADQL, the earlier 23.88 GiB extrapolation is not a capacity
+guarantee for this broader snapshot. The full-build gate stays closed until a
+bounded Gaia smoke build measures its source density and compressed bytes per
+row. See `docs/acquisition_envelope_v1.md`.
+
 Staging deletion is permitted only after:
 
 1. the Parquet is readable and its schema matches the contract;
@@ -144,6 +158,37 @@ scoring reader resolves that variant's bit from the build manifest and applies
 the bit predicate. It must not infer compatibility from the model filename or
 re-evaluate a different locus. The scorer records the pool build ID, mask schema
 hash, variant, bit, locus run/hash and model result ID in its output manifest.
+
+The operational implementation is
+`wr_detector.pipelines.prediction_pool_scoring` and its configuration is
+`configs/prediction_pool_scoring.yaml`. A scoring application requires an
+immutable `scoring_run_id`, a synchronized first-layer `model_run_id` and one
+or more explicitly reviewed `result_id` values. Automatic best-model selection
+is deliberately not supported.
+
+For every selected model and terminal tile, the scorer:
+
+1. verifies the model artifact SHA-256 and exact feature list;
+2. matches the model's dataset variant, locus run and reference hash to the
+   pool contract;
+3. reads only completed acquisition Parquet whose checksum still matches;
+4. pushes the stable variant-bit predicate into DuckDB before inference;
+5. excludes known reference/control sources;
+6. streams bounded Arrow batches rather than loading a whole tile;
+7. scores only rows with every required model feature present;
+8. writes a compressed Parquet atomically plus a checksummed manifest;
+9. registers compatible, feature-missing, scored and threshold-positive counts
+   in `prediction_pool_scoring.duckdb`.
+
+Completed work units are skipped only when the input, output, manifest, model
+and schema contracts all still match. A corrupt completed record is never
+silently overwritten. Reuse the same scoring run to resume valid work; use a
+new run ID when the selected models or pool contract changes.
+
+Full scoring is blocked until the completed tile set equals the tile set
+declared by the production pool configuration. `--max-tiles` is the bounded
+validation path used after training: dry-run first, score one tile, audit it,
+then resume the same application without the bound.
 
 ## Mandatory validation
 

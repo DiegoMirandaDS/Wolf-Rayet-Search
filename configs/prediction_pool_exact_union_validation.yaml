@@ -1,0 +1,24 @@
+extends: configs/prediction_pool_exact_union.yaml
+
+build:
+  pool_build_id: pool_exact_union_validation_18regions_v1
+  status: validation_only
+  full_build_enabled: false
+
+output_db: data/databases/prediction_pool_exact_union_validation_v1.duckdb
+staging_dir: data/raw/prediction_pool_exact_union_validation_v1
+output_dir: data/processed/prediction_pool_exact_union_validation_v1/acquisition
+manifest_dir: data/processed/prediction_pool_exact_union_validation_v1/manifests
+
+gaia:
+  continue_on_tile_error: false
+
+safety:
+  max_local_bytes: 10000000000
+  max_workers: 4
+
+tiling:
+  # Reuse the exact 18 boxes and identifiers from the expanded 2026-07-22 audit.
+  explicit_tiles_from_config: configs/prediction_pool_locus_audit.yaml
+  explicit_tiles_key: regions
+  explicit_tile_id_key: name

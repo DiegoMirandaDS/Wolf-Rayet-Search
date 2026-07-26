@@ -6,7 +6,7 @@ the canonical prediction-pool DuckDB or its completed parquet tiles.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
@@ -36,40 +36,17 @@ from wr_detector.pipelines.prediction_pool import (
     load_prediction_pool_config,
 )
 from wr_detector.pipelines.exact_variant_union import (
+    ExactLocus,
+    LocusPlane,
     VariantMaskSchema,
+    add_local_colors,
     add_compatible_variant_mask,
     build_variant_mask_schema,
+    evaluate_locus,
+    load_exact_loci_from_exports,
     variant_astrometry_mask,
     variant_photometry_mask,
 )
-
-
-@dataclass(frozen=True)
-class LocusPlane:
-    x: str
-    y: str
-    slope: float
-    intercept: float
-    threshold: float
-    transform: str = "signed_log1p"
-
-    @property
-    def name(self) -> str:
-        return f"{self.x}__{self.y}"
-
-
-@dataclass(frozen=True)
-class ExactLocus:
-    variant: str
-    planes: tuple[LocusPlane, ...]
-    aggregate_min_outlier_planes: int
-    source_path: str
-    source_sha256: str
-    locus_run_id: str = "unversioned"
-
-    @property
-    def required_colors(self) -> tuple[str, ...]:
-        return tuple(sorted({color for plane in self.planes for color in [plane.x, plane.y]}))
 
 
 def run_prediction_pool_locus_pilot(
@@ -303,36 +280,14 @@ def load_exact_loci(pool_config: dict[str, Any], *, variants: list[str]) -> dict
     filters = pool_config["filters"]
     reference_dir = resolve_path(pool_config["paths"]["processed_reference_dir"])
     minimum_outliers = int(filters["color_locus"].get("aggregate_min_outlier_planes", 1))
-    loci: dict[str, ExactLocus] = {}
-    for variant in variants:
-        filename = filters["color_locus"]["reference_output_template"].format(variant=variant)
-        path = reference_dir / filename
-        source_sha256 = _file_sha256(path)
-        frame = pd.read_parquet(path)
-        plane_names = [name for name in str(frame["color_locus_planes"].iloc[0]).split(",") if name]
-        planes = []
-        for plane_name in plane_names:
-            prefix = f"color_locus_{plane_name}"
-            x, y = plane_name.split("__", 1)
-            planes.append(
-                LocusPlane(
-                    x=x,
-                    y=y,
-                    slope=float(frame[f"{prefix}_slope"].iloc[0]),
-                    intercept=float(frame[f"{prefix}_intercept"].iloc[0]),
-                    threshold=float(frame[f"{prefix}_threshold"].iloc[0]),
-                    transform=str(frame["color_locus_transform"].iloc[0]),
-                )
-            )
-        loci[variant] = ExactLocus(
-            variant=variant,
-            planes=tuple(planes),
-            aggregate_min_outlier_planes=minimum_outliers,
-            source_path=str(path),
-            source_sha256=source_sha256,
-            locus_run_id=f"legacy_exact_{variant}_{source_sha256[:12]}",
-        )
-    return loci
+    return load_exact_loci_from_exports(
+        reference_dir=reference_dir,
+        reference_output_template=filters["color_locus"][
+            "reference_output_template"
+        ],
+        variants=variants,
+        aggregate_min_outlier_planes=minimum_outliers,
+    )
 
 
 def _add_region_annotations(
@@ -466,32 +421,15 @@ def _evaluate_locus(
     *,
     min_outlier_planes: int,
 ) -> dict[str, Any]:
-    valid_columns = []
-    outlier_columns = []
-    margins: dict[str, pd.Series] = {}
-    for plane in planes:
-        x = _signed_log1p(frame[plane.x])
-        y = _signed_log1p(frame[plane.y])
-        valid = frame[plane.x].notna() & frame[plane.y].notna()
-        residual = y - (plane.intercept + plane.slope * x)
-        margin = plane.threshold - residual.abs()
-        margins[plane.name] = margin
-        valid_columns.append(valid)
-        outlier_columns.append(valid & margin.lt(0))
-    valid_all = pd.concat(valid_columns, axis=1).all(axis=1) if valid_columns else pd.Series(True, index=frame.index)
-    outlier_count = pd.concat(outlier_columns, axis=1).sum(axis=1) if outlier_columns else pd.Series(0, index=frame.index)
-    keep = valid_all & outlier_count.lt(int(min_outlier_planes))
-    return {"valid": valid_all, "outlier_count": outlier_count.astype("int16"), "keep": keep, "margins": margins}
+    return evaluate_locus(
+        frame,
+        planes,
+        min_outlier_planes=min_outlier_planes,
+    )
 
 
 def _add_local_colors(frame: pd.DataFrame) -> pd.DataFrame:
-    out = frame.copy()
-    for name, expression in LOCAL_COLOR_EXPRESSIONS.items():
-        if name in out:
-            continue
-        left, right = [part.strip() for part in expression.split("-")]
-        out[name] = pd.to_numeric(out[left], errors="coerce") - pd.to_numeric(out[right], errors="coerce")
-    return out
+    return add_local_colors(frame)
 
 
 def analyze_geometric_containment(

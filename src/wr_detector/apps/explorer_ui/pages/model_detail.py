@@ -28,8 +28,7 @@ def render() -> None:
         st.warning("The selected run has no model results.")
         return
 
-    selected = ui.select_model(results)
-    st.markdown(f"**{selected['short_label']}** &nbsp; {ui.status_badge(selected.get('selection_status'))}")
+    selected = ui.active_model_context(results, widget_key="detail_active_model")
     st.caption(str(selected.get("model_label", "")))
 
     ui.kpi_row(

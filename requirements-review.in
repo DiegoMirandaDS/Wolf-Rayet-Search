@@ -1,0 +1,28 @@
+# Runtime used to inspect the bundled experiments in Model Explorer.
+# Keep this list aligned with the base dependencies and the `viz` extra in
+# pyproject.toml. The project itself is installed separately with --no-deps.
+astropy>=6.0
+astroquery>=0.4.7
+beautifulsoup4>=4.12
+duckdb>=1.0
+lxml>=5.0
+# Match the environment that serialized the bundled first-stage models.
+imbalanced-learn==0.13.0
+joblib==1.4.2
+matplotlib>=3.8
+numpy==1.26.4
+pandas>=2.0
+polars>=1.0
+pyarrow>=15.0
+pyyaml>=6.0
+scikit-optimize>=0.10
+scikit-learn==1.6.1
+scipy==1.15.2
+typer>=0.12
+streamlit>=1.57,<1.58
+altair>=5.0
+xgboost==3.0.2
+
+# Local editable installation uses the setuptools PEP 517 backend.
+setuptools>=68
+wheel

@@ -181,6 +181,7 @@ def sync_second_layer_history(
             if _table_exists(con, "second_layer_results"):
                 con.execute("DELETE FROM second_layer_results WHERE run_id = ?", [run_id])
             con.execute("DELETE FROM second_layer_runs WHERE run_id = ?", [run_id])
+        _ensure_second_layer_result_types(con)
         con.execute(
             """
             INSERT INTO second_layer_runs
@@ -199,6 +200,22 @@ def sync_second_layer_history(
         _append_dataframe(con, "second_layer_results", prepared)
 
     return {"db_path": str(db_path), "run_id": run_id, "rows": int(len(prepared))}
+
+
+def _ensure_second_layer_result_types(con: duckdb.DuckDBPyConnection) -> None:
+    """Repair early history schemas that inferred fractional lineage as INTEGER."""
+    if not _table_exists(con, "second_layer_results"):
+        return
+    schema = con.execute("DESCRIBE second_layer_results").fetchdf()
+    types = dict(zip(schema["column_name"], schema["column_type"], strict=False))
+    holdout_type = str(types.get("holdout_fraction", "")).upper()
+    if holdout_type and not any(
+        token in holdout_type for token in ["DOUBLE", "FLOAT", "DECIMAL", "REAL"]
+    ):
+        con.execute(
+            "ALTER TABLE second_layer_results "
+            "ALTER COLUMN holdout_fraction SET DATA TYPE DOUBLE"
+        )
 
 
 def list_training_runs(config_path: str | Path = "configs/models.yaml") -> pd.DataFrame:
@@ -373,6 +390,8 @@ def _result_id(row: pd.Series) -> str:
         str(row.get("feature_set", "")),
         str(row.get("model", "")),
         str(row.get("sampler", "")),
+        str(row.get("train_positive_cohort", "all")),
+        str(row.get("evaluation_positive_cohort", "all")),
         str(row.get("model_path", "")),
     ]
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
@@ -507,13 +526,71 @@ def _mark_artifacts_deleted(db_path: Path, paths: list[str]) -> None:
 def _append_dataframe(con: duckdb.DuckDBPyConnection, table: str, df: pd.DataFrame) -> None:
     if df.empty:
         return
-    con.register("_incoming_df", df)
+    prepared = _normalize_history_string_columns(df)
+    con.register("_incoming_df", prepared)
     if not _table_exists(con, table):
         con.execute(f"CREATE TABLE {table} AS SELECT * FROM _incoming_df")
     else:
         _add_missing_columns(con, table, "_incoming_df")
+        _repair_empty_column_types(con, table, "_incoming_df")
         con.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _incoming_df")
     con.unregister("_incoming_df")
+
+
+def _normalize_history_string_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep optional text lineage fields from becoming INTEGER when all-null."""
+    prepared = df.copy()
+    for column in prepared.columns:
+        non_null = prepared[column].dropna()
+        is_text = (
+            column.endswith(("_sha256", "_json", "_path"))
+            or column in {
+                "code_git_commit",
+                "locus_run_id",
+                "train_positive_cohort",
+                "evaluation_positive_cohort",
+            }
+            or (
+                not non_null.empty
+                and non_null.map(lambda value: isinstance(value, str)).all()
+            )
+        )
+        if is_text:
+            prepared[column] = prepared[column].astype("string")
+    return prepared
+
+
+def _repair_empty_column_types(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    registered_df: str,
+) -> None:
+    """Repair legacy columns whose type was inferred from only NULL values."""
+    existing = {
+        row.column_name: row.column_type
+        for row in con.execute(f"DESCRIBE {table}").fetchdf().itertuples(
+            index=False
+        )
+    }
+    incoming = {
+        row.column_name: row.column_type
+        for row in con.execute(
+            f"DESCRIBE {registered_df}"
+        ).fetchdf().itertuples(index=False)
+    }
+    for column, incoming_type in incoming.items():
+        existing_type = existing.get(column)
+        if existing_type is None or existing_type == incoming_type:
+            continue
+        quoted = _quote_identifier(column)
+        populated = con.execute(
+            f"SELECT COUNT({quoted}) FROM {table}"
+        ).fetchone()[0]
+        if int(populated) == 0:
+            con.execute(
+                f"ALTER TABLE {table} ALTER COLUMN {quoted} "
+                f"SET DATA TYPE {incoming_type}"
+            )
 
 
 def _add_missing_columns(con: duckdb.DuckDBPyConnection, table: str, registered_df: str) -> None:

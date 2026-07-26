@@ -10,6 +10,7 @@ from wr_detector.db import write_reference_database, write_simbad_negative_datab
 from wr_detector.features import add_color_features, annotate_color_locus_planes, evaluate_color_locus_planes
 from wr_detector.pipelines.prediction_pool import (
     SkyTile,
+    audit_color_envelope_reference_coverage,
     audit_prediction_pool,
     assert_prediction_pool_build_allowed,
     build_prediction_pool_adql,
@@ -18,6 +19,7 @@ from wr_detector.pipelines.prediction_pool import (
     ingest_prediction_tile,
     initialize_prediction_pool_database,
     local_storage_bytes,
+    make_sky_tiles,
     mark_tile_completed,
     refresh_known_sources,
     refresh_prediction_pool_metadata_views,
@@ -139,6 +141,8 @@ def test_adql_builder_uses_required_gaia_xmatches_and_intra_mission_colors(tmp_p
     assert "gaiadr3.tmass_psc_xsc_best_neighbour" in adql
     assert "gaiadr3.tmass_psc_xsc_join" in adql
     assert "gaiadr1.tmass_original_valid" in adql
+    assert "xjoin.original_psc_source_id = tmass.designation" in adql
+    assert "xjoin.original_psc_source_id AS tmass_id" in adql
     assert "gaiadr3.allwise_best_neighbour" in adql
     assert "gaiadr1.allwise_original_valid" in adql
     assert "gaia.phot_g_mean_mag - gaia.phot_bp_mean_mag" in adql
@@ -170,6 +174,59 @@ def test_adql_builder_can_include_bounded_gaia_audit_columns(tmp_path):
 
     assert "gaia.l AS galactic_l" in adql
     assert "gaia.ag_gspphot AS ag_gspphot" in adql
+
+
+def test_adql_builder_can_retain_photometric_crossmatch_diagnostics(tmp_path):
+    config = _write_prediction_config(tmp_path)
+    _write_color_locus_parquet(config)
+    config["photometry"]["include_crossmatch_diagnostics"] = True
+    envelope = derive_color_envelope(config)
+
+    adql = build_prediction_pool_adql(
+        SkyTile("t", 0.0, 1.0, -1.0, 0.0),
+        envelope,
+        config,
+    )
+
+    assert "xmatch.angular_distance AS tmass_angular_distance" in adql
+    assert "xmatch.number_of_neighbours AS tmass_number_of_neighbours" in adql
+    assert "xmatch.xm_flag AS tmass_xm_flag" in adql
+    assert "wise_match.angular_distance AS wise_angular_distance" in adql
+    assert "wise_match.number_of_mates AS wise_number_of_mates" in adql
+    assert "wise_match.xm_flag AS wise_xm_flag" in adql
+
+
+def test_acquisition_first_adql_defers_quality_and_pads_all_wr_bounds(tmp_path):
+    config = _write_prediction_config(tmp_path)
+    _write_color_locus_parquet(config)
+    config["color_envelope"].update(
+        {
+            "use_kept_rows": False,
+            "server_side_quality_filter": False,
+            "padding": {
+                "span_fraction": 0.0,
+                "absolute": {"G_BP": 0.2},
+            },
+            "coverage_validation": {
+                "require_all_finite_reference_rows": True
+            },
+        }
+    )
+    envelope = derive_color_envelope(config)
+    coverage = audit_color_envelope_reference_coverage(config, envelope)
+    adql = build_prediction_pool_adql(
+        SkyTile("t", 0.0, 1.0, -1.0, 0.0),
+        envelope,
+        config,
+    )
+
+    g_bp = envelope["color_bounds"]["G_BP"]
+    assert g_bp["min"] == pytest.approx(g_bp["observed_min"] - 0.2)
+    assert g_bp["max"] == pytest.approx(g_bp["observed_max"] + 0.2)
+    assert coverage["outside_reference_rows"] == 0
+    assert coverage["coverage_fraction"] == 1.0
+    assert "tmass.ph_qual LIKE" not in adql
+    assert "wise.ph_qual LIKE" not in adql
 
 
 def test_legacy_prediction_pool_configuration_is_read_only():
@@ -357,3 +414,65 @@ def test_local_storage_bytes_counts_database_and_staging(tmp_path):
     (staging / "tile.csv").write_bytes(b"123")
 
     assert local_storage_bytes(db_path, staging) == 8
+
+
+def test_explicit_smoke_tiles_are_preserved_and_validated():
+    config = {
+        "tiling": {
+            "ra_step_deg": 10,
+            "dec_step_deg": 10,
+            "explicit_tiles": [
+                {
+                    "tile_id": "dense",
+                    "ra_min": 10,
+                    "ra_max": 10.5,
+                    "dec_min": -1,
+                    "dec_max": -0.5,
+                },
+                {
+                    "tile_id": "sparse",
+                    "ra_min": 100,
+                    "ra_max": 101,
+                    "dec_min": 30,
+                    "dec_max": 31,
+                },
+            ],
+        }
+    }
+
+    tiles = make_sky_tiles(config)
+
+    assert [tile.tile_id for tile in tiles] == ["dense", "sparse"]
+    assert tiles[0].ra_max == 10.5
+
+
+def test_pre_subdivision_replaces_only_configured_parent_tile():
+    config = {
+        "tiling": {
+            "ra_step_deg": 10,
+            "dec_step_deg": 10,
+            "subtile_ra_step_deg": 5,
+            "subtile_dec_step_deg": 5,
+            "pre_subdivide_parent_tile_ids": [
+                "ra000p00_010p00__dec-90p00_-80p00"
+            ],
+        }
+    }
+
+    tiles = make_sky_tiles(config)
+
+    assert len(tiles) == 651
+    assert all(
+        tile.tile_id != "ra000p00_010p00__dec-90p00_-80p00"
+        for tile in tiles
+    )
+    assert {
+        tile.tile_id
+        for tile in tiles
+        if tile.ra_min < 10 and tile.dec_min < -80
+    } == {
+        "ra000p00_005p00__dec-90p00_-85p00",
+        "ra005p00_010p00__dec-90p00_-85p00",
+        "ra000p00_005p00__dec-85p00_-80p00",
+        "ra005p00_010p00__dec-85p00_-80p00",
+    }

@@ -5,6 +5,8 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+import json
 from pathlib import Path
 from threading import Lock, local
 from time import sleep
@@ -13,7 +15,7 @@ from typing import Any, Mapping
 import duckdb
 import pandas as pd
 
-from wr_detector.config import load_yaml, resolve_path
+from wr_detector.config import load_yaml, load_yaml_with_extends, resolve_path
 from wr_detector.db import connect
 
 
@@ -292,7 +294,7 @@ def audit_prediction_pool(db_path: str | Path) -> dict[str, Any]:
 
 
 def load_prediction_pool_config(config_path: str | Path) -> dict[str, Any]:
-    config = load_yaml(config_path)
+    config = load_yaml_with_extends(config_path)
     config["paths"] = load_yaml(config["paths_config"])
     config["filters"] = load_yaml(config["filters_config"])
     env_file = config.get("gaia", {}).get("credentials_env_file")
@@ -361,12 +363,47 @@ def derive_color_envelope(config: dict[str, Any]) -> dict[str, Any]:
         if not kept.empty:
             union = kept
 
+    configured_colors = config.get("color_envelope", {}).get(
+        "colors", list(COLOR_EXPRESSIONS)
+    )
+    unknown_colors = sorted(set(configured_colors) - set(COLOR_EXPRESSIONS))
+    if unknown_colors:
+        raise ValueError(
+            "Prediction-pool acquisition supports only the declared intra-mission "
+            f"colors; unknown colors: {unknown_colors}"
+        )
     color_bounds = {}
-    for color in COLOR_EXPRESSIONS:
+    padding_config = config.get("color_envelope", {}).get("padding", {})
+    span_fraction = float(padding_config.get("span_fraction", 0.0))
+    absolute_padding = padding_config.get("absolute", {})
+    if span_fraction < 0:
+        raise ValueError("color_envelope.padding.span_fraction cannot be negative.")
+    source_rows = int(len(union))
+    source_hashes: dict[str, str] = {}
+    for variant in variants:
+        output = filters["color_locus"]["reference_output_template"].format(
+            variant=variant
+        )
+        path = reference_dir / output
+        source_hashes[variant] = sha256(path.read_bytes()).hexdigest()
+    for color in configured_colors:
         values = pd.to_numeric(union[color], errors="coerce").dropna()
         if values.empty:
             continue
-        color_bounds[color] = {"min": float(values.min()), "max": float(values.max())}
+        observed_min = float(values.min())
+        observed_max = float(values.max())
+        padding = max(
+            float(absolute_padding.get(color, 0.0)),
+            (observed_max - observed_min) * span_fraction,
+        )
+        color_bounds[color] = {
+            "min": observed_min - padding,
+            "max": observed_max + padding,
+            "observed_min": observed_min,
+            "observed_max": observed_max,
+            "padding": padding,
+            "finite_reference_rows": int(len(values)),
+        }
 
     fit_envelopes = []
     for fit in fits.values():
@@ -383,12 +420,140 @@ def derive_color_envelope(config: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    return {"color_bounds": color_bounds, "fits": fit_envelopes, "variants": variants}
+    envelope = {
+        "schema_version": "wr_intra_mission_acquisition_envelope_v1",
+        "color_bounds": color_bounds,
+        "fits": fit_envelopes,
+        "variants": variants,
+        "reference_population": (
+            "color_locus_kept_rows"
+            if config.get("color_envelope", {}).get("use_kept_rows", True)
+            else "all_finite_variant_reference_rows"
+        ),
+        "reference_rows": source_rows,
+        "reference_artifact_sha256": source_hashes,
+        "padding": {
+            "span_fraction": span_fraction,
+            "absolute": {
+                color: float(absolute_padding.get(color, 0.0))
+                for color in configured_colors
+            },
+        },
+    }
+    envelope["sha256"] = _canonical_json_sha256(envelope)
+    return envelope
+
+
+def audit_color_envelope_reference_coverage(
+    config: dict[str, Any],
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    """Prove coverage for every finite WR row used to define the envelope."""
+    filters = config["filters"]
+    reference_dir = resolve_path(config["paths"]["processed_reference_dir"])
+    frames = []
+    for variant in envelope["variants"]:
+        filename = filters["color_locus"]["reference_output_template"].format(
+            variant=variant
+        )
+        frame = pd.read_parquet(reference_dir / filename)
+        frame = frame.assign(_coverage_variant=variant)
+        frames.append(frame)
+    controls = pd.concat(frames, ignore_index=True)
+    colors = list(envelope["color_bounds"])
+    finite = pd.Series(True, index=controls.index)
+    inside = pd.Series(True, index=controls.index)
+    for color in colors:
+        values = pd.to_numeric(controls[color], errors="coerce")
+        finite &= values.notna()
+        bounds = envelope["color_bounds"][color]
+        inside &= values.between(
+            float(bounds["min"]), float(bounds["max"]), inclusive="both"
+        )
+    eligible = controls[finite]
+    outside = eligible[~inside[finite]]
+    source_column = "source_id" if "source_id" in controls else None
+    report = {
+        "colors": colors,
+        "reference_rows": int(len(controls)),
+        "finite_reference_rows": int(finite.sum()),
+        "covered_reference_rows": int((finite & inside).sum()),
+        "outside_reference_rows": int(len(outside)),
+        "coverage_fraction": (
+            float((finite & inside).sum() / finite.sum()) if finite.any() else 0.0
+        ),
+        "missing_required_color_rows": int((~finite).sum()),
+        "outside_source_ids": (
+            [
+                int(value)
+                for value in pd.to_numeric(
+                    outside[source_column], errors="coerce"
+                ).dropna().drop_duplicates().head(100)
+            ]
+            if source_column
+            else []
+        ),
+    }
+    required = bool(
+        config.get("color_envelope", {})
+        .get("coverage_validation", {})
+        .get("require_all_finite_reference_rows", False)
+    )
+    if required and report["outside_reference_rows"]:
+        raise ValueError(
+            "Acquisition envelope does not cover every finite WR reference row: "
+            f"{report['outside_reference_rows']} rows are outside."
+        )
+    return report
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
 
 
 def make_sky_tiles(config: dict[str, Any]) -> list[SkyTile]:
-    ra_step = float(config["tiling"]["ra_step_deg"])
-    dec_step = float(config["tiling"]["dec_step_deg"])
+    tiling = config.get("tiling", {})
+    explicit_tiles = tiling.get("explicit_tiles", [])
+    source_config = tiling.get("explicit_tiles_from_config")
+    if source_config:
+        source = load_yaml(source_config)
+        source_key = str(tiling.get("explicit_tiles_key", "regions"))
+        source_id_key = str(tiling.get("explicit_tile_id_key", "name"))
+        explicit_tiles = [
+            {
+                "tile_id": item[source_id_key],
+                "ra_min": item["ra_min"],
+                "ra_max": item["ra_max"],
+                "dec_min": item["dec_min"],
+                "dec_max": item["dec_max"],
+            }
+            for item in source[source_key]
+        ]
+    if explicit_tiles:
+        tiles = [
+            SkyTile(
+                tile_id=str(item["tile_id"]),
+                ra_min=float(item["ra_min"]),
+                ra_max=float(item["ra_max"]),
+                dec_min=float(item["dec_min"]),
+                dec_max=float(item["dec_max"]),
+            )
+            for item in explicit_tiles
+        ]
+        if len({tile.tile_id for tile in tiles}) != len(tiles):
+            raise ValueError("tiling.explicit_tiles contains duplicate tile_id values.")
+        for tile in tiles:
+            if not (
+                0 <= tile.ra_min < tile.ra_max <= 360
+                and -90 <= tile.dec_min < tile.dec_max <= 90
+            ):
+                raise ValueError(f"Invalid explicit sky tile bounds: {tile}")
+        return tiles
+    ra_step = float(tiling["ra_step_deg"])
+    dec_step = float(tiling["dec_step_deg"])
     tiles: list[SkyTile] = []
     dec = -90.0
     while dec < 90.0:
@@ -400,7 +565,46 @@ def make_sky_tiles(config: dict[str, Any]) -> list[SkyTile]:
             tiles.append(SkyTile(tile_id=tile_id, ra_min=ra, ra_max=ra_max, dec_min=dec, dec_max=dec_max))
             ra = ra_max
         dec = dec_max
-    return tiles
+    parent_ids = set(tiling.get("pre_subdivide_parent_tile_ids", []))
+    if not parent_ids:
+        return tiles
+    unknown = sorted(parent_ids - {tile.tile_id for tile in tiles})
+    if unknown:
+        raise ValueError(
+            f"Unknown pre-subdivision parent tile ids: {unknown}"
+        )
+    child_ra_step = float(tiling.get("subtile_ra_step_deg", ra_step / 2))
+    child_dec_step = float(tiling.get("subtile_dec_step_deg", dec_step / 2))
+    expanded: list[SkyTile] = []
+    for tile in tiles:
+        if tile.tile_id not in parent_ids:
+            expanded.append(tile)
+            continue
+        child_dec = tile.dec_min
+        while child_dec < tile.dec_max:
+            child_dec_max = min(tile.dec_max, child_dec + child_dec_step)
+            child_ra = tile.ra_min
+            while child_ra < tile.ra_max:
+                child_ra_max = min(tile.ra_max, child_ra + child_ra_step)
+                expanded.append(
+                    SkyTile(
+                        tile_id=format_tile_id(
+                            child_ra,
+                            child_ra_max,
+                            child_dec,
+                            child_dec_max,
+                        ),
+                        ra_min=child_ra,
+                        ra_max=child_ra_max,
+                        dec_min=child_dec,
+                        dec_max=child_dec_max,
+                    )
+                )
+                child_ra = child_ra_max
+            child_dec = child_dec_max
+    if len({tile.tile_id for tile in expanded}) != len(expanded):
+        raise ValueError("Pre-subdivision generated duplicate child tile ids.")
+    return expanded
 
 
 def format_tile_id(ra_min: float, ra_max: float, dec_min: float, dec_max: float) -> str:
@@ -435,7 +639,13 @@ def build_prediction_pool_adql(
     extra_gaia_columns: Mapping[str, str] | None = None,
 ) -> str:
     top = f"TOP {int(row_limit)} " if row_limit is not None else ""
-    quality = build_quality_predicate(config)
+    quality = (
+        build_quality_predicate(config)
+        if config.get("color_envelope", {}).get(
+            "server_side_quality_filter", True
+        )
+        else ""
+    )
     bounds = build_color_bounds_predicate(envelope["color_bounds"])
     astrometry = build_astrometry_predicate(config)
     predicates = [
@@ -451,26 +661,83 @@ def build_prediction_pool_adql(
         "tmass.ks_m IS NOT NULL",
         "wise.w1mpro IS NOT NULL",
         "wise.w2mpro IS NOT NULL",
-        quality,
         bounds,
     ]
+    if quality:
+        predicates.append(quality)
     if config.get("color_envelope", {}).get("server_side_locus_filter", False):
         predicates.append(build_color_locus_predicate(envelope["fits"]))
     if astrometry:
         predicates.append(astrometry)
     where = "\n        AND ".join(f"({p})" for p in predicates if p)
+    configured_extra_gaia = {
+        str(alias): str(column)
+        for alias, column in config.get("gaia", {})
+        .get("extra_source_columns", {})
+        .items()
+    }
+    configured_extra_gaia.update(extra_gaia_columns or {})
     extra_select = ""
-    for alias, column in (extra_gaia_columns or {}).items():
+    for alias, column in configured_extra_gaia.items():
         if not alias.replace("_", "").isalnum() or not column.replace("_", "").isalnum():
             raise ValueError(f"Invalid Gaia column or alias: {column!r} AS {alias!r}")
         extra_select += f"        gaia.{column} AS {alias},\n"
+    ap_columns = {
+        str(alias): str(column)
+        for alias, column in config.get("gaia", {})
+        .get("astrophysical_parameters_columns", {})
+        .items()
+    }
+    ap_select = ""
+    for alias, column in ap_columns.items():
+        if not alias.replace("_", "").isalnum() or not column.replace("_", "").isalnum():
+            raise ValueError(
+                f"Invalid astrophysical-parameters column or alias: "
+                f"{column!r} AS {alias!r}"
+            )
+        ap_select += f"        ap.{column} AS {alias},\n"
+    wise_extra_columns = {
+        str(alias): str(column)
+        for alias, column in config.get("photometry", {})
+        .get("allwise_extra_columns", {})
+        .items()
+    }
+    wise_extra_select = ""
+    for alias, column in wise_extra_columns.items():
+        if not alias.replace("_", "").isalnum() or not column.replace("_", "").isalnum():
+            raise ValueError(
+                f"Invalid AllWISE column or alias: {column!r} AS {alias!r}"
+            )
+        wise_extra_select += f"        wise.{column} AS {alias},\n"
+    crossmatch_select = ""
+    if bool(
+        config.get("photometry", {}).get(
+            "include_crossmatch_diagnostics", False
+        )
+    ):
+        crossmatch_select = (
+            "        xmatch.angular_distance AS tmass_angular_distance,\n"
+            "        xmatch.number_of_neighbours AS tmass_number_of_neighbours,\n"
+            "        xmatch.number_of_mates AS tmass_number_of_mates,\n"
+            "        xmatch.xm_flag AS tmass_xm_flag,\n"
+            "        wise_match.angular_distance AS wise_angular_distance,\n"
+            "        wise_match.number_of_neighbours AS wise_number_of_neighbours,\n"
+            "        wise_match.number_of_mates AS wise_number_of_mates,\n"
+            "        wise_match.xm_flag AS wise_xm_flag,\n"
+        )
+    ap_join = (
+        "\n    LEFT OUTER JOIN gaiadr3.astrophysical_parameters AS ap "
+        "USING (source_id)"
+        if ap_columns
+        else ""
+    )
     return f"""
     SELECT {top}
         gaia.source_id,
         gaia.designation AS gaia_designation,
         gaia.ra,
         gaia.dec,
-{extra_select}        gaia.phot_g_mean_mag AS G,
+{extra_select}{ap_select}        gaia.phot_g_mean_mag AS G,
         gaia.phot_bp_mean_mag AS BP,
         gaia.phot_rp_mean_mag AS RP,
         gaia.phot_g_mean_flux AS G_flux,
@@ -493,12 +760,12 @@ def build_prediction_pool_adql(
         wise.w2mpro_error AS W2_error,
         wise.w3mpro_error AS W3_error,
         wise.w4mpro_error AS W4_error,
-        gaia.parallax,
+{wise_extra_select}        gaia.parallax,
         gaia.parallax_error,
         gaia.parallax_over_error,
         gaia.pmra,
         gaia.pmdec,
-        xjoin.original_psc_source_id AS tmass_id,
+{crossmatch_select}        xjoin.original_psc_source_id AS tmass_id,
         tmass.ph_qual AS tmass_quality,
         wise.designation AS wise_id,
         wise.ph_qual AS wise_quality
@@ -509,7 +776,7 @@ def build_prediction_pool_adql(
         ON xjoin.original_psc_source_id = tmass.designation
     JOIN gaiadr3.allwise_best_neighbour AS wise_match USING (source_id)
     JOIN gaiadr1.allwise_original_valid AS wise
-        ON wise_match.allwise_oid = wise.allwise_oid
+        ON wise_match.allwise_oid = wise.allwise_oid{ap_join}
     WHERE {where}
     """
 

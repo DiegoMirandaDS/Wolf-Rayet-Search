@@ -10,10 +10,52 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+
+
+LOCAL_COLOR_EXPRESSIONS: dict[str, tuple[str, str]] = {
+    "G_BP": ("G", "BP"),
+    "G_RP": ("G", "RP"),
+    "BP_RP": ("BP", "RP"),
+    "J_H": ("J", "H"),
+    "J_K": ("J", "Ks"),
+    "H_K": ("H", "Ks"),
+    "W1_W2": ("W1", "W2"),
+}
+
+
+@dataclass(frozen=True)
+class LocusPlane:
+    x: str
+    y: str
+    slope: float
+    intercept: float
+    threshold: float
+    transform: str = "signed_log1p"
+
+    @property
+    def name(self) -> str:
+        return f"{self.x}__{self.y}"
+
+
+@dataclass(frozen=True)
+class ExactLocus:
+    variant: str
+    planes: tuple[LocusPlane, ...]
+    aggregate_min_outlier_planes: int
+    source_path: str
+    source_sha256: str
+    locus_run_id: str = "unversioned"
+
+    @property
+    def required_colors(self) -> tuple[str, ...]:
+        return tuple(
+            sorted({color for plane in self.planes for color in [plane.x, plane.y]})
+        )
 
 
 DEFAULT_VARIANT_BIT_REGISTRY: dict[str, int] = {
@@ -205,6 +247,161 @@ def variant_astrometry_mask(frame: pd.DataFrame, variant: str) -> pd.Series:
         if variant.endswith(f"_poe_{threshold}"):
             return (parallax.gt(0) & poe.ge(threshold)).fillna(False)
     raise ValueError(f"Unsupported exact variant: {variant}")
+
+
+def load_exact_loci_from_exports(
+    *,
+    reference_dir: str | Path,
+    reference_output_template: str,
+    variants: Sequence[str],
+    aggregate_min_outlier_planes: int,
+) -> dict[str, ExactLocus]:
+    """Load immutable exact-locus contracts from the exported WR datasets."""
+    root = Path(reference_dir)
+    loci: dict[str, ExactLocus] = {}
+    for variant in variants:
+        path = root / reference_output_template.format(variant=variant)
+        payload = path.read_bytes()
+        source_sha256 = sha256(payload).hexdigest()
+        frame = pd.read_parquet(path)
+        if frame.empty:
+            raise ValueError(f"Exact-locus export is empty: {path}")
+        plane_names = [
+            name
+            for name in str(frame["color_locus_planes"].iloc[0]).split(",")
+            if name
+        ]
+        planes: list[LocusPlane] = []
+        for plane_name in plane_names:
+            prefix = f"color_locus_{plane_name}"
+            x, y = plane_name.split("__", 1)
+            transform = str(frame["color_locus_transform"].iloc[0])
+            if transform != "signed_log1p":
+                raise ValueError(
+                    f"Unsupported color-locus transform {transform!r} in {path}"
+                )
+            planes.append(
+                LocusPlane(
+                    x=x,
+                    y=y,
+                    slope=float(frame[f"{prefix}_slope"].iloc[0]),
+                    intercept=float(frame[f"{prefix}_intercept"].iloc[0]),
+                    threshold=float(frame[f"{prefix}_threshold"].iloc[0]),
+                    transform=transform,
+                )
+            )
+        loci[variant] = ExactLocus(
+            variant=variant,
+            planes=tuple(planes),
+            aggregate_min_outlier_planes=int(aggregate_min_outlier_planes),
+            source_path=str(path),
+            source_sha256=source_sha256,
+            locus_run_id=f"legacy_exact_{variant}_{source_sha256[:12]}",
+        )
+    return loci
+
+
+def add_local_colors(frame: pd.DataFrame) -> pd.DataFrame:
+    """Derive only the intra-mission colors supported by the project contract."""
+    out = frame.copy()
+    for color, (left, right) in LOCAL_COLOR_EXPRESSIONS.items():
+        if color not in out:
+            out[color] = pd.to_numeric(
+                out[left], errors="coerce"
+            ) - pd.to_numeric(out[right], errors="coerce")
+    return out
+
+
+def evaluate_locus(
+    frame: pd.DataFrame,
+    planes: Sequence[LocusPlane],
+    *,
+    min_outlier_planes: int,
+) -> dict[str, Any]:
+    """Evaluate one exact multi-plane locus without quality or astrometric cuts."""
+    valid_columns: list[pd.Series] = []
+    outlier_columns: list[pd.Series] = []
+    margins: dict[str, pd.Series] = {}
+    for plane in planes:
+        x = _signed_log1p(pd.to_numeric(frame[plane.x], errors="coerce"))
+        y = _signed_log1p(pd.to_numeric(frame[plane.y], errors="coerce"))
+        valid = frame[plane.x].notna() & frame[plane.y].notna()
+        residual = y - (plane.intercept + plane.slope * x)
+        margin = plane.threshold - residual.abs()
+        margins[plane.name] = margin
+        valid_columns.append(valid)
+        outlier_columns.append(valid & margin.lt(0))
+    valid_all = (
+        pd.concat(valid_columns, axis=1).all(axis=1)
+        if valid_columns
+        else pd.Series(True, index=frame.index)
+    )
+    outlier_count = (
+        pd.concat(outlier_columns, axis=1).sum(axis=1)
+        if outlier_columns
+        else pd.Series(0, index=frame.index)
+    )
+    keep = valid_all & outlier_count.lt(int(min_outlier_planes))
+    return {
+        "valid": valid_all,
+        "outlier_count": outlier_count.astype("int16"),
+        "keep": keep,
+        "margins": margins,
+    }
+
+
+def evaluate_exact_variant_union(
+    frame: pd.DataFrame,
+    exact_loci: Mapping[str, ExactLocus],
+    schema: VariantMaskSchema,
+    *,
+    keep_diagnostic_columns: bool = False,
+) -> pd.DataFrame:
+    """Annotate acquisition rows with exact locus, rule and compatibility masks."""
+    out = add_local_colors(frame)
+    locus_mask = np.zeros(len(out), dtype=np.uint64)
+    quality_mask = np.zeros(len(out), dtype=np.uint64)
+    astrometry_mask = np.zeros(len(out), dtype=np.uint64)
+    compatible_mask = np.zeros(len(out), dtype=np.uint64)
+    compatible_count = np.zeros(len(out), dtype=np.int16)
+
+    for entry in schema.entries:
+        locus = exact_loci[entry.variant]
+        evaluated = evaluate_locus(
+            out,
+            locus.planes,
+            min_outlier_planes=locus.aggregate_min_outlier_planes,
+        )
+        locus_keep = evaluated["keep"].fillna(False).astype(bool)
+        quality_keep = variant_photometry_mask(out, entry.variant)
+        astrometry_keep = variant_astrometry_mask(out, entry.variant)
+        compatible_keep = locus_keep & quality_keep & astrometry_keep
+        bit_value = np.uint64(1) << np.uint64(entry.bit)
+        locus_mask |= locus_keep.to_numpy(dtype=np.uint64) * bit_value
+        quality_mask |= quality_keep.to_numpy(dtype=np.uint64) * bit_value
+        astrometry_mask |= astrometry_keep.to_numpy(dtype=np.uint64) * bit_value
+        compatible_mask |= compatible_keep.to_numpy(dtype=np.uint64) * bit_value
+        compatible_count += compatible_keep.to_numpy(dtype=np.int16)
+        if keep_diagnostic_columns:
+            out[f"exact_locus_keep__{entry.variant}"] = locus_keep
+            out[f"quality_keep__{entry.variant}"] = quality_keep
+            out[f"astrometry_keep__{entry.variant}"] = astrometry_keep
+            out[f"exact_variant_keep__{entry.variant}"] = compatible_keep
+
+    out["exact_locus_variant_mask"] = locus_mask
+    out["photometry_variant_mask"] = quality_mask
+    out["astrometry_variant_mask"] = astrometry_mask
+    out["compatible_variant_mask"] = compatible_mask
+    out["compatible_variant_count"] = compatible_count
+    out["passes_any_exact_variant"] = compatible_count > 0
+    if keep_diagnostic_columns:
+        assert_variant_mask_invariants(out, schema)
+    return out
+
+
+def _signed_log1p(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    return np.sign(numeric) * np.log1p(np.abs(numeric))
 
 
 def build_tile_count_record(

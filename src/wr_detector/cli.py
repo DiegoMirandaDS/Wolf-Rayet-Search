@@ -22,11 +22,20 @@ from wr_detector.modeling import (
     train_models,
 )
 from wr_detector.pipelines.prediction_pool import audit_prediction_pool, build_prediction_pool
+from wr_detector.pipelines.prediction_pool_exact_union import (
+    audit_exact_union_prediction_pool,
+    build_exact_union_prediction_pool,
+)
+from wr_detector.pipelines.prediction_pool_scoring import (
+    audit_prediction_pool_scoring,
+    list_scoreable_models,
+    score_prediction_pool,
+)
 from wr_detector.pipelines.reference import build_reference
 from wr_detector.pipelines.simbad_negative import build_simbad_negative
 
 
-app = typer.Typer(help="Wolf-Rayet Detector project CLI.")
+app = typer.Typer(help="Wolf-Rayet Search project CLI.")
 
 
 EXPLORER_THEMES = {
@@ -72,6 +81,16 @@ def streamlit_model_explorer_command(config: Path, port: int, theme: str = DEFAU
         str(app_path),
         "--server.port",
         str(port),
+        "--server.address",
+        "127.0.0.1",
+        "--server.headless",
+        "true",
+        "--server.enableCORS",
+        "true",
+        "--server.enableXsrfProtection",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
         *explorer_theme_options(theme),
         "--",
         "--config",
@@ -177,6 +196,164 @@ def audit_prediction_pool_command(
         typer.echo(f"  {label}: {count}")
 
 
+@app.command("build-prediction-pool-exact-union")
+def build_prediction_pool_exact_union_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_exact_union.yaml"), "--config", "-c"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate coverage/contracts and print sample ADQL without Gaia jobs.",
+    ),
+    max_tiles: int | None = typer.Option(
+        None,
+        "--max-tiles",
+        help="Bound the number of tiles. Required until the full-build gate opens.",
+    ),
+    row_limit: int | None = typer.Option(
+        None,
+        "--row-limit",
+        help="Add TOP N per tile; use only with the dedicated smoke configuration.",
+    ),
+    confirm_full_build: bool = typer.Option(
+        False,
+        "--confirm-full-build",
+        help="Required with a full-build-enabled config when --max-tiles is absent.",
+    ),
+) -> None:
+    result = build_exact_union_prediction_pool(
+        config,
+        dry_run=dry_run,
+        max_tiles=max_tiles,
+        row_limit=row_limit,
+        confirm_full_build=confirm_full_build,
+    )
+    typer.echo(
+        "Exact-union acquisition build prepared."
+        if dry_run
+        else "Exact-union acquisition build completed."
+    )
+    for key, value in result.items():
+        if key == "sample_adql":
+            typer.echo("sample_adql:")
+            typer.echo(value)
+        else:
+            typer.echo(f"{key}: {value}")
+
+
+@app.command("audit-prediction-pool-exact-union-build")
+def audit_prediction_pool_exact_union_build_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_exact_union.yaml"), "--config", "-c"
+    ),
+) -> None:
+    result = audit_exact_union_prediction_pool(config)
+    typer.echo("Exact-union prediction-pool build audit")
+    typer.echo(f"status: {result['status']}")
+    typer.echo(f"pool_build_id: {result['pool_build_id']}")
+    typer.echo(f"registered_tiles: {result['registered_tiles']}")
+    typer.echo(f"parquet_files: {result['parquet_files']}")
+    typer.echo(f"global_counts: {result['global_counts']}")
+    if result["errors"]:
+        typer.echo("errors:")
+        for error in result["errors"]:
+            typer.echo(f"  - {error}")
+        raise typer.Exit(code=1)
+
+
+@app.command("list-prediction-pool-models")
+def list_prediction_pool_models_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_scoring.yaml"), "--config", "-c"
+    ),
+    model_run_id: str = typer.Option(
+        ..., "--model-run-id", help="Synchronized first-layer training run."
+    ),
+) -> None:
+    results = list_scoreable_models(
+        config,
+        model_run_id=model_run_id,
+    )
+    typer.echo(results.to_string(index=False))
+
+
+@app.command("score-prediction-pool")
+def score_prediction_pool_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_scoring.yaml"), "--config", "-c"
+    ),
+    scoring_run_id: str = typer.Option(
+        ..., "--scoring-run-id", help="Immutable scoring application id."
+    ),
+    model_run_id: str = typer.Option(
+        ..., "--model-run-id", help="Synchronized first-layer training run."
+    ),
+    result_ids: list[str] | None = typer.Option(
+        None,
+        "--result-id",
+        help=(
+            "Explicit model result id. Repeat for multiple selected models; "
+            "automatic best-model selection is not performed."
+        ),
+    ),
+    max_tiles: int | None = typer.Option(
+        None,
+        "--max-tiles",
+        help="Bound work for a validation run; full scoring requires all tiles.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate pool/model contracts and report work units only.",
+    ),
+) -> None:
+    result = score_prediction_pool(
+        config,
+        scoring_run_id=scoring_run_id,
+        model_run_id=model_run_id,
+        result_ids=result_ids or [],
+        max_tiles=max_tiles,
+        dry_run=dry_run,
+        verbose=not dry_run,
+    )
+    typer.echo(
+        "Prediction-pool scoring plan validated."
+        if dry_run
+        else "Prediction-pool scoring completed."
+    )
+    for key, value in result.items():
+        typer.echo(f"{key}: {value}")
+
+
+@app.command("audit-prediction-pool-scoring")
+def audit_prediction_pool_scoring_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_scoring.yaml"), "--config", "-c"
+    ),
+    scoring_run_id: str = typer.Option(
+        ..., "--scoring-run-id", help="Scoring application id to audit."
+    ),
+) -> None:
+    result = audit_prediction_pool_scoring(
+        config,
+        scoring_run_id=scoring_run_id,
+    )
+    typer.echo("Prediction-pool scoring audit")
+    typer.echo(f"scoring_run_id: {result['scoring_run_id']}")
+    typer.echo(f"pool_build_id: {result['pool_build_id']}")
+    typer.echo(
+        f"completed_work_units: {result['completed_work_units']}/"
+        f"{result['registered_work_units']}"
+    )
+    if result["errors"]:
+        typer.echo("errors:")
+        for error in result["errors"]:
+            typer.echo(f"  - {error}")
+        raise typer.Exit(code=1)
+    typer.echo(f"ok: {result['ok']}")
+
+
 @app.command("pilot-prediction-pool-locus")
 def pilot_prediction_pool_locus_command(
     config: Path = typer.Option(Path("configs/prediction_pool_locus_pilot.yaml"), "--config", "-c"),
@@ -243,6 +420,16 @@ def train_models_command(
     n_iter: int | None = typer.Option(None, "--n-iter", help="Override BayesSearchCV iterations."),
     run_id: str | None = typer.Option(None, "--run-id", help="Stable training run id. Auto-generated when omitted."),
     resume_run: bool = typer.Option(False, "--resume-run", help="Resume a run by skipping completed configurations in its run CSV."),
+    train_positive_cohort: str = typer.Option(
+        "all",
+        "--train-positive-cohort",
+        help="Positive-source cohort used for fitting; negatives are unchanged.",
+    ),
+    evaluation_positive_cohort: str = typer.Option(
+        "all",
+        "--evaluation-positive-cohort",
+        help="Positive-source cohort used in holdout evaluation; negatives are unchanged.",
+    ),
 ) -> None:
     results = train_models(
         config,
@@ -254,6 +441,8 @@ def train_models_command(
         n_iter=n_iter,
         run_id=run_id,
         resume_run=resume_run,
+        train_positive_cohort=train_positive_cohort,
+        evaluation_positive_cohort=evaluation_positive_cohort,
         verbose=True,
     )
     typer.echo("Model training completed.")

@@ -7,12 +7,48 @@ theme (transparent backgrounds, theme fonts and grid colors).
 
 from __future__ import annotations
 
+from typing import Literal
+
 import altair as alt
+import numpy as np
 import pandas as pd
 
 CLASS_COLORS = alt.Scale(domain=["WR", "negative"], range=["#f28e2b", "#4e79a7"])
 SPLIT_COLORS = alt.Scale(domain=["train", "cv", "holdout"], range=["#59a14f", "#edc948", "#e15759"])
 CATEGORY_SCHEME = "tableau10"
+
+DIAGNOSTIC_ORDER = [
+    "Background",
+    "True negative",
+    "Contaminant @K",
+    "False positive",
+    "WR outside @K",
+    "False negative",
+    "WR recovered @K",
+    "True positive",
+]
+
+DIAGNOSTIC_COLORS = {
+    "Background": "#4e79a7",
+    "True negative": "#4e79a7",
+    "Contaminant @K": "#ff79c6",
+    "False positive": "#ff79c6",
+    "WR outside @K": "#edc948",
+    "False negative": "#edc948",
+    "WR recovered @K": "#f28e2b",
+    "True positive": "#f28e2b",
+}
+
+DIAGNOSTIC_MARKS = {
+    "Background": {"shape": "circle", "size": 18, "opacity": 0.18, "filled": True},
+    "True negative": {"shape": "circle", "size": 18, "opacity": 0.18, "filled": True},
+    "Contaminant @K": {"shape": "triangle-up", "size": 46, "opacity": 0.72, "filled": True},
+    "False positive": {"shape": "triangle-up", "size": 46, "opacity": 0.72, "filled": True},
+    "WR outside @K": {"shape": "diamond", "size": 68, "opacity": 0.9, "filled": False},
+    "False negative": {"shape": "diamond", "size": 68, "opacity": 0.9, "filled": False},
+    "WR recovered @K": {"shape": "circle", "size": 78, "opacity": 0.95, "filled": True},
+    "True positive": {"shape": "circle", "size": 78, "opacity": 0.95, "filled": True},
+}
 
 
 def metric_bar(
@@ -22,25 +58,65 @@ def metric_bar(
     value_title: str,
     label_col: str = "short_label",
     percent: bool = False,
+    orientation: Literal["horizontal", "vertical"] = "horizontal",
 ) -> alt.Chart | None:
     columns = [column for column in {label_col, value_col, "model", "selection_status"} if column in df.columns]
     data = df[columns].dropna(subset=[value_col]).copy()
     if data.empty:
         return None
-    height = min(560, max(160, 26 * len(data) + 30))
-    axis_format = ".0%" if percent else None
+    value_axis = alt.Axis(format=".0%") if percent else alt.Axis()
+    value_format = ".1%" if percent else ".4f"
     tooltip = [
         alt.Tooltip(f"{label_col}:N", title="model"),
-        alt.Tooltip(f"{value_col}:Q", title=value_title, format=".1%" if percent else ".4f"),
+        alt.Tooltip(f"{value_col}:Q", title=value_title, format=value_format),
     ]
     if "selection_status" in data.columns:
         tooltip.append(alt.Tooltip("selection_status:N", title="status"))
+
+    if orientation == "vertical":
+        height = 300
+        bars = (
+            alt.Chart(data)
+            .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+            .encode(
+                x=alt.X(
+                    f"{label_col}:N",
+                    sort="-y",
+                    title=None,
+                    axis=alt.Axis(
+                        labelAngle=-35,
+                        labelLimit=140,
+                        labelOverlap=False,
+                    ),
+                    scale=alt.Scale(paddingInner=0.45, paddingOuter=0.2),
+                ),
+                y=alt.Y(
+                    f"{value_col}:Q",
+                    title=value_title,
+                    axis=value_axis,
+                    scale=alt.Scale(zero=True),
+                ),
+                color=alt.Color(
+                    "model:N",
+                    scale=alt.Scale(scheme=CATEGORY_SCHEME),
+                    legend=None,
+                ),
+                tooltip=tooltip,
+            )
+        )
+        labels = bars.mark_text(dy=-7, fontSize=11).encode(
+            text=alt.Text(f"{value_col}:Q", format=value_format),
+            color=alt.value("#e6e9ef"),
+        )
+        return (bars + labels).properties(width="container", height=height)
+
+    height = min(560, max(180, 32 * len(data) + 36))
     return (
         alt.Chart(data)
-        .mark_bar(cornerRadiusEnd=2)
+        .mark_bar(cornerRadiusEnd=2, size=18)
         .encode(
             y=alt.Y(f"{label_col}:N", sort="-x", title=None, axis=alt.Axis(labelLimit=320)),
-            x=alt.X(f"{value_col}:Q", title=value_title, axis=alt.Axis(format=axis_format)),
+            x=alt.X(f"{value_col}:Q", title=value_title, axis=value_axis),
             color=alt.Color("model:N", scale=alt.Scale(scheme=CATEGORY_SCHEME), legend=alt.Legend(title=None, orient="bottom")),
             tooltip=tooltip,
         )
@@ -49,6 +125,7 @@ def metric_bar(
 
 
 def recovery_lines(ranked: pd.DataFrame, *, ks: list[int]) -> alt.Chart | None:
+    label_col = "chart_label" if "chart_label" in ranked.columns else "short_label"
     rows = []
     for _, row in ranked.iterrows():
         for k in ks:
@@ -57,7 +134,8 @@ def recovery_lines(ranked: pd.DataFrame, *, ks: list[int]) -> alt.Chart | None:
                 continue
             rows.append(
                 {
-                    "short_label": row["short_label"],
+                    "series_label": row[label_col],
+                    "model_label": row["short_label"],
                     "budget": k,
                     "recovered_pct": float(pct),
                     "recovered": row.get(f"holdout_wr_at_{k}"),
@@ -72,15 +150,24 @@ def recovery_lines(ranked: pd.DataFrame, *, ks: list[int]) -> alt.Chart | None:
         .encode(
             x=alt.X("budget:Q", scale=alt.Scale(type="log"), title="candidates reviewed", axis=alt.Axis(values=ks)),
             y=alt.Y("recovered_pct:Q", title="WR holdout recovered", axis=alt.Axis(format=".0%")),
-            color=alt.Color("short_label:N", scale=alt.Scale(scheme=CATEGORY_SCHEME), legend=alt.Legend(title=None, orient="bottom", columns=2, labelLimit=320)),
+            color=alt.Color(
+                "series_label:N",
+                scale=alt.Scale(scheme=CATEGORY_SCHEME),
+                legend=alt.Legend(
+                    title=None,
+                    orient="bottom",
+                    columns=2,
+                    labelLimit=180,
+                ),
+            ),
             tooltip=[
-                alt.Tooltip("short_label:N", title="model"),
+                alt.Tooltip("model_label:N", title="model"),
                 alt.Tooltip("budget:Q", title="budget"),
                 alt.Tooltip("recovered:Q", title="WR recovered"),
                 alt.Tooltip("recovered_pct:Q", title="recovered", format=".1%"),
             ],
         )
-        .properties(width="container", height=340)
+        .properties(width="container", height=300)
     )
 
 
@@ -88,18 +175,58 @@ def dataset_heatmap(df: pd.DataFrame, *, value_col: str, value_title: str, perce
     data = df.dropna(subset=[value_col]).copy()
     if data.empty:
         return None
-    data["column_label"] = data["model"].astype(str) + " / " + data["sampler"].astype(str)
+    model_labels = {
+        "random_forest": "RF",
+        "hist_gradient_boosting": "HGB",
+        "xgboost": "XGB",
+    }
+    sampler_labels = {
+        "none": "none",
+        "smote": "SMOTE",
+        "smote_enn": "SMOTE-ENN",
+    }
+    if "includes_parallax_error" in data.columns:
+        feature_suffix = data["includes_parallax_error"].fillna(False).map(
+            {True: "+err", False: "colors"}
+        )
+    elif "feature_set" in data.columns:
+        feature_suffix = data["feature_set"].astype(str).map(
+            lambda value: "+err" if "error" in value else "colors"
+        )
+    else:
+        feature_suffix = pd.Series("colors", index=data.index)
+    data["column_label"] = (
+        data["model"].astype(str).replace(model_labels)
+        + "/"
+        + data["sampler"].astype(str).replace(sampler_labels)
+        + " "
+        + feature_suffix
+    )
+    if (
+        "negative_ratio_label" in data.columns
+        and data["negative_ratio_label"].astype(str).nunique() > 1
+    ):
+        data["column_label"] += " " + data["negative_ratio_label"].astype(str)
     aggregated = (
         data.groupby(["dataset_variant", "column_label"], as_index=False)[value_col].max()
     )
-    height = max(180, 34 * aggregated["dataset_variant"].nunique() + 60)
+    height = min(360, max(210, 38 * aggregated["dataset_variant"].nunique() + 70))
     value_format = ".0%" if percent else ".3f"
     base = alt.Chart(aggregated).encode(
-        x=alt.X("column_label:N", title=None, axis=alt.Axis(labelAngle=-30)),
-        y=alt.Y("dataset_variant:N", title=None),
+        x=alt.X(
+            "column_label:N",
+            title=None,
+            axis=alt.Axis(labelAngle=-25, labelLimit=130),
+        ),
+        y=alt.Y(
+            "dataset_variant:N",
+            title=None,
+            axis=alt.Axis(labelLimit=160),
+        ),
     )
+    legend = alt.Legend(title=value_title, format=".0%") if percent else alt.Legend(title=value_title)
     rect = base.mark_rect().encode(
-        color=alt.Color(f"{value_col}:Q", scale=alt.Scale(scheme="viridis"), legend=alt.Legend(title=value_title, format=".0%" if percent else None)),
+        color=alt.Color(f"{value_col}:Q", scale=alt.Scale(scheme="viridis"), legend=legend),
         tooltip=[
             alt.Tooltip("dataset_variant:N", title="dataset"),
             alt.Tooltip("column_label:N", title="model"),
@@ -117,36 +244,60 @@ def dataset_heatmap(df: pd.DataFrame, *, value_col: str, value_title: str, perce
 
 
 def stability_gap_bars(ranked: pd.DataFrame) -> alt.Chart | None:
-    required = {"short_label", "cv_train_gap_f2", "holdout_cv_gap_f2"}
+    label_col = "chart_label" if "chart_label" in ranked.columns else "short_label"
+    required = {label_col, "cv_train_gap_f2", "holdout_cv_gap_f2"}
     if not required.issubset(ranked.columns):
         return None
     data = ranked.dropna(subset=["cv_train_gap_f2", "holdout_cv_gap_f2"]).copy()
     if data.empty:
         return None
     long = data.melt(
-        id_vars=["short_label"],
+        id_vars=[label_col],
         value_vars=["cv_train_gap_f2", "holdout_cv_gap_f2"],
         var_name="gap",
         value_name="value",
     )
-    long["gap"] = long["gap"].map({"cv_train_gap_f2": "train - CV", "holdout_cv_gap_f2": "holdout - CV"})
+    long["gap"] = long["gap"].map(
+        {
+            "cv_train_gap_f2": "Train - CV",
+            "holdout_cv_gap_f2": "Holdout - CV",
+        }
+    )
     bars = (
         alt.Chart(long)
-        .mark_bar()
+        .mark_bar(size=10)
         .encode(
-            x=alt.X("short_label:N", title=None, axis=alt.Axis(labelAngle=-30, labelLimit=200)),
-            xOffset=alt.XOffset("gap:N"),
-            y=alt.Y("value:Q", title="F2 gap"),
-            color=alt.Color("gap:N", legend=alt.Legend(title=None, orient="bottom")),
+            y=alt.Y(
+                f"{label_col}:N",
+                title=None,
+                sort="-x",
+                axis=alt.Axis(labelLimit=210),
+            ),
+            yOffset=alt.YOffset("gap:N"),
+            x=alt.X("value:Q", title="F2 gap"),
+            color=alt.Color(
+                "gap:N",
+                legend=alt.Legend(
+                    title=None,
+                    orient="bottom",
+                    columns=2,
+                    labelLimit=100,
+                ),
+            ),
             tooltip=[
-                alt.Tooltip("short_label:N", title="model"),
+                alt.Tooltip(f"{label_col}:N", title="model"),
                 alt.Tooltip("gap:N"),
                 alt.Tooltip("value:Q", format=".3f"),
             ],
         )
     )
-    threshold = alt.Chart(pd.DataFrame({"y": [0.15]})).mark_rule(strokeDash=[5, 4], color="#e15759").encode(y="y:Q")
-    return (bars + threshold).properties(width="container", height=300)
+    threshold = (
+        alt.Chart(pd.DataFrame({"x": [0.15]}))
+        .mark_rule(strokeDash=[5, 4], color="#e15759")
+        .encode(x="x:Q")
+    )
+    height = min(420, max(220, 36 * data[label_col].nunique() + 60))
+    return (bars + threshold).properties(width="container", height=height)
 
 
 def split_metric_bars(row: pd.Series) -> alt.Chart | None:
@@ -441,46 +592,599 @@ def retention_tradeoff_scatter(results: pd.DataFrame) -> alt.Chart | None:
     )
 
 
-def color_magnitude(cases: pd.DataFrame, *, selected_source_id: int | None = None, x: str = "BP_RP", y: str = "G") -> alt.Chart | None:
+def stack_recovery_lines(recovery: pd.DataFrame) -> alt.Chart | None:
+    required = {"policy", "budget", "wr_recovered", "wr_recovered_pct"}
+    if recovery.empty or not required.issubset(recovery.columns):
+        return None
+    data = recovery.dropna(subset=["budget", "wr_recovered"]).copy()
+    if data.empty:
+        return None
+    budgets = sorted(data["budget"].astype(int).unique().tolist())
+    return (
+        alt.Chart(data)
+        .mark_line(point=True, strokeWidth=2.5)
+        .encode(
+            x=alt.X(
+                "budget:Q",
+                scale=alt.Scale(type="log"),
+                axis=alt.Axis(values=budgets),
+                title="candidates reviewed",
+            ),
+            y=alt.Y("wr_recovered:Q", title="WR recovered"),
+            color=alt.Color(
+                "policy:N",
+                scale=alt.Scale(
+                    domain=["First stage", "Pass-first"],
+                    range=["#4e79a7", "#f28e2b"],
+                ),
+                legend=alt.Legend(title=None, orient="bottom"),
+            ),
+            strokeDash=alt.StrokeDash(
+                "policy:N",
+                scale=alt.Scale(
+                    domain=["First stage", "Pass-first"],
+                    range=[[1, 0], [6, 3]],
+                ),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("policy:N"),
+                alt.Tooltip("budget:Q"),
+                alt.Tooltip("wr_recovered:Q", title="WR recovered"),
+                alt.Tooltip("wr_recovered_pct:Q", title="holdout recovery", format=".1%"),
+                alt.Tooltip("negatives_reviewed:Q", title="negatives reviewed"),
+                alt.Tooltip("candidates_per_wr:Q", title="candidates / WR", format=".2f"),
+            ],
+        )
+        .properties(width="container", height=320)
+    )
+
+
+def stack_tradeoff_bars(tradeoff: pd.DataFrame) -> alt.Chart | None:
+    required = {"input_budget", "wr_retention", "negative_removal_rate"}
+    if tradeoff.empty or not required.issubset(tradeoff.columns):
+        return None
+    long = tradeoff[["input_budget", "wr_retention", "negative_removal_rate"]].melt(
+        id_vars=["input_budget"],
+        value_vars=["wr_retention", "negative_removal_rate"],
+        var_name="metric",
+        value_name="value",
+    )
+    long["metric"] = long["metric"].map(
+        {
+            "wr_retention": "WR retained",
+            "negative_removal_rate": "negatives removed",
+        }
+    )
+    return (
+        alt.Chart(long)
+        .mark_bar()
+        .encode(
+            x=alt.X("input_budget:N", title="first-stage input budget"),
+            xOffset=alt.XOffset("metric:N"),
+            y=alt.Y(
+                "value:Q",
+                title=None,
+                scale=alt.Scale(domain=[0, 1]),
+                axis=alt.Axis(format=".0%"),
+            ),
+            color=alt.Color(
+                "metric:N",
+                scale=alt.Scale(
+                    domain=["WR retained", "negatives removed"],
+                    range=["#f28e2b", "#4e79a7"],
+                ),
+                legend=alt.Legend(title=None, orient="bottom"),
+            ),
+            tooltip=[
+                alt.Tooltip("input_budget:N", title="input budget"),
+                alt.Tooltip("metric:N"),
+                alt.Tooltip("value:Q", format=".1%"),
+            ],
+        )
+        .properties(width="container", height=300)
+    )
+
+
+def color_magnitude(
+    cases: pd.DataFrame,
+    *,
+    selected_source_id: int | None = None,
+    x: str = "BP_RP",
+    y: str = "G",
+    color_color: bool = False,
+) -> alt.Chart | None:
+    """Photometric case scatter with explicit diagnostic draw order."""
     columns = [
         column
-        for column in {x, y, "target", "object_name", "rank", "score", "source_id", "simbad_main_type", "spectral_type"}
+        for column in {
+            x,
+            y,
+            "target",
+            "diagnostic_state",
+            "object_name",
+            "rank",
+            "score",
+            "source_id",
+            "simbad_main_type",
+            "spectral_type",
+        }
         if column in cases.columns
     ]
     data = cases[columns].dropna(subset=[x, y]).copy()
     if data.empty:
         return None
-    data["class"] = data["target"].map({1: "WR", 0: "negative"})
+    if "diagnostic_state" not in data.columns:
+        data["diagnostic_state"] = data["target"].map(
+            {1: "WR recovered @K", 0: "Background"}
+        )
+    tooltip = _case_tooltip(data, extra_numeric=[x, y])
+    layers = _diagnostic_point_layers(
+        data,
+        x=x,
+        y=y,
+        x_title=_axis_label(x),
+        y_title=_axis_label(y),
+        y_reverse=not color_color,
+        tooltip=tooltip,
+    )
+    selected = _selected_case_layer(
+        data,
+        selected_source_id=selected_source_id,
+        x=x,
+        y=y,
+        y_reverse=not color_color,
+        tooltip=tooltip,
+    )
+    if selected is not None:
+        layers.append(selected)
+    return (
+        alt.layer(*layers)
+        .resolve_scale(color="shared")
+        .interactive()
+        .properties(width="container", height=420)
+    )
+
+
+def galactic_polar_chart(
+    cases: pd.DataFrame,
+    *,
+    selected_source_id: int | None = None,
+) -> alt.Chart | None:
+    """North-polar projection of Galactic longitude and latitude."""
+    required = {"polar_x", "polar_y", "galactic_l", "galactic_b"}
+    if not required.issubset(cases.columns):
+        return None
+    data = cases[
+        _case_chart_columns(cases, list(required))
+    ].dropna(subset=["polar_x", "polar_y"]).copy()
+    if data.empty:
+        return None
+    tooltip = _case_tooltip(
+        data,
+        extra_numeric=["galactic_l", "galactic_b"],
+    )
+    guide_rows = []
+    for radius, latitude in [(45.0, 45), (90.0, 0), (135.0, -45)]:
+        for angle in np.linspace(0, 2 * np.pi, 181):
+            guide_rows.append(
+                {
+                    "guide": f"b={latitude}°",
+                    "x": radius * np.sin(angle),
+                    "y": radius * np.cos(angle),
+                    "order": angle,
+                }
+            )
+    guides = (
+        alt.Chart(pd.DataFrame(guide_rows))
+        .mark_line(color="#888", opacity=0.22, strokeWidth=1)
+        .encode(
+            x=alt.X(
+                "x:Q",
+                axis=_hidden_axis(),
+                scale=alt.Scale(domain=[-180, 180]),
+            ),
+            y=alt.Y(
+                "y:Q",
+                axis=_hidden_axis(),
+                scale=alt.Scale(domain=[-180, 180]),
+            ),
+            detail="guide:N",
+            order="order:Q",
+        )
+    )
+    labels = alt.Chart(
+        pd.DataFrame(
+            [
+                {"x": 0, "y": 173, "label": "l=0°"},
+                {"x": 173, "y": 0, "label": "l=90°"},
+                {"x": 0, "y": -173, "label": "l=180°"},
+                {"x": -173, "y": 0, "label": "l=270°"},
+            ]
+        )
+    ).mark_text(color="#aaa", fontSize=10).encode(
+        x=alt.X("x:Q", axis=_hidden_axis()),
+        y=alt.Y("y:Q", axis=_hidden_axis()),
+        text="label:N",
+    )
+    points = _diagnostic_point_layers(
+        data,
+        x="polar_x",
+        y="polar_y",
+        x_title=None,
+        y_title=None,
+        x_domain=[-180, 180],
+        y_domain=[-180, 180],
+        hide_axes=True,
+        legend_columns=2,
+        tooltip=tooltip,
+    )
+    selected = _selected_case_layer(
+        data,
+        selected_source_id=selected_source_id,
+        x="polar_x",
+        y="polar_y",
+        tooltip=tooltip,
+    )
+    layers: list[alt.Chart] = [guides, labels, *points]
+    if selected is not None:
+        layers.append(selected)
+    return (
+        alt.layer(*layers)
+        .resolve_scale(color="shared")
+        .properties(width="container", height=430)
+    )
+
+
+def galactic_plane_map(
+    cases: pd.DataFrame,
+    *,
+    selected_source_id: int | None = None,
+    sun_distance_kpc: float = 8.122,
+) -> alt.Chart | None:
+    """Schematic Milky Way plane with parallax-qualified source positions."""
+    required = {
+        "galactocentric_x_kpc",
+        "galactocentric_y_kpc",
+        "distance_plotted",
+    }
+    if not required.issubset(cases.columns):
+        return None
+    data = cases[
+        _case_chart_columns(
+            cases,
+            [
+                "galactocentric_x_kpc",
+                "galactocentric_y_kpc",
+                "distance_plotted",
+                "distance_kpc",
+                "galactic_l",
+                "galactic_b",
+            ],
+        )
+    ]
+    data = data[data["distance_plotted"].fillna(False)].dropna(
+        subset=["galactocentric_x_kpc", "galactocentric_y_kpc"]
+    )
+    if data.empty:
+        return None
+
+    observed_extent = float(
+        np.nanmax(
+            np.abs(
+                data[
+                    ["galactocentric_x_kpc", "galactocentric_y_kpc"]
+                ].to_numpy(dtype=float)
+            )
+        )
+    )
+    extent = min(30.0, max(17.0, np.ceil(observed_extent + 1.0)))
+    rings = []
+    for radius in [4.0, 8.0, 12.0, 16.0]:
+        for angle in np.linspace(0, 2 * np.pi, 181):
+            rings.append(
+                {
+                    "ring": radius,
+                    "x": radius * np.cos(angle),
+                    "y": radius * np.sin(angle),
+                    "order": angle,
+                }
+            )
+    ring_chart = (
+        alt.Chart(pd.DataFrame(rings))
+        .mark_line(color="#6272a4", opacity=0.18, strokeWidth=1)
+        .encode(
+            x=alt.X(
+                "x:Q",
+                title="Galactocentric X (kpc)",
+                scale=alt.Scale(domain=[-extent, extent]),
+            ),
+            y=alt.Y(
+                "y:Q",
+                title="Galactocentric Y (kpc)",
+                scale=alt.Scale(domain=[-extent, extent]),
+            ),
+            detail="ring:N",
+            order="order:Q",
+        )
+    )
+    arm_rows = []
+    pitch = np.deg2rad(18.5)
+    for arm in range(4):
+        for order, radius in enumerate(np.linspace(2.6, 16.0, 180)):
+            angle = np.log(radius / 2.6) / np.tan(pitch) + arm * np.pi / 2
+            arm_rows.append(
+                {
+                    "arm": arm,
+                    "x": radius * np.cos(angle),
+                    "y": radius * np.sin(angle),
+                    "order": order,
+                }
+            )
+    arms = (
+        alt.Chart(pd.DataFrame(arm_rows))
+        .mark_line(color="#bd93f9", opacity=0.16, strokeWidth=8)
+        .encode(x="x:Q", y="y:Q", detail="arm:N", order="order:Q")
+    )
+    landmarks = (
+        alt.Chart(
+            pd.DataFrame(
+                [
+                    {"x": 0.0, "y": 0.0, "label": "Galactic center", "kind": "center"},
+                    {
+                        "x": float(sun_distance_kpc),
+                        "y": 0.0,
+                        "label": "Sun",
+                        "kind": "sun",
+                    },
+                ]
+            )
+        )
+        .mark_point(size=120, filled=True)
+        .encode(
+            x="x:Q",
+            y="y:Q",
+            shape=alt.Shape(
+                "kind:N",
+                scale=alt.Scale(
+                    domain=["center", "sun"],
+                    range=["circle", "diamond"],
+                ),
+                legend=None,
+            ),
+            color=alt.Color(
+                "kind:N",
+                scale=alt.Scale(
+                    domain=["center", "sun"],
+                    range=["#f8f8f2", "#edc948"],
+                ),
+                legend=None,
+            ),
+            tooltip=alt.Tooltip("label:N"),
+        )
+    )
+    tooltip = _case_tooltip(
+        data,
+        extra_numeric=[
+            "galactic_l",
+            "galactic_b",
+            "distance_kpc",
+            "galactocentric_x_kpc",
+            "galactocentric_y_kpc",
+        ],
+    )
+    points = _diagnostic_point_layers(
+        data,
+        x="galactocentric_x_kpc",
+        y="galactocentric_y_kpc",
+        x_title="Galactocentric X (kpc)",
+        y_title="Galactocentric Y (kpc)",
+        x_domain=[-extent, extent],
+        y_domain=[-extent, extent],
+        legend_columns=1,
+        tooltip=tooltip,
+    )
+    selected = _selected_case_layer(
+        data,
+        selected_source_id=selected_source_id,
+        x="galactocentric_x_kpc",
+        y="galactocentric_y_kpc",
+        tooltip=tooltip,
+    )
+    layers: list[alt.Chart] = [ring_chart, arms, landmarks, *points]
+    if selected is not None:
+        layers.append(selected)
+    return (
+        alt.layer(*layers)
+        .resolve_scale(color="independent", shape="independent")
+        .interactive()
+        .properties(width="container", height=450)
+    )
+
+
+def _case_tooltip(
+    data: pd.DataFrame,
+    *,
+    extra_numeric: list[str] | None = None,
+) -> list[alt.Tooltip]:
     tooltip = [
         alt.Tooltip("object_name:N", title="object"),
+        alt.Tooltip("diagnostic_state:N", title="state"),
         alt.Tooltip("rank:Q"),
         alt.Tooltip("score:Q", format=".4f"),
-        alt.Tooltip(f"{x}:Q", format=".3f"),
-        alt.Tooltip(f"{y}:Q", format=".3f"),
     ]
+    for column in extra_numeric or []:
+        if column in data.columns:
+            tooltip.append(
+                alt.Tooltip(
+                    f"{column}:Q",
+                    title=_axis_label(column),
+                    format=".3f",
+                )
+            )
     if "simbad_main_type" in data.columns:
         tooltip.append(alt.Tooltip("simbad_main_type:N", title="SIMBAD type"))
     if "spectral_type" in data.columns:
         tooltip.append(alt.Tooltip("spectral_type:N", title="spectral type"))
-    points = (
-        alt.Chart(data)
-        .mark_circle()
+    return tooltip
+
+
+def _case_chart_columns(
+    data: pd.DataFrame,
+    extras: list[str],
+) -> list[str]:
+    desired = [
+        "source_id",
+        "target",
+        "diagnostic_state",
+        "object_name",
+        "rank",
+        "score",
+        "simbad_main_type",
+        "spectral_type",
+        *extras,
+    ]
+    return list(dict.fromkeys(column for column in desired if column in data.columns))
+
+
+def _diagnostic_point_layers(
+    data: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    x_title: str | None,
+    y_title: str | None,
+    tooltip: list[alt.Tooltip],
+    y_reverse: bool = False,
+    x_domain: list[float] | None = None,
+    y_domain: list[float] | None = None,
+    hide_axes: bool = False,
+    legend_columns: int = 2,
+) -> list[alt.Chart]:
+    states = [
+        state
+        for state in DIAGNOSTIC_ORDER
+        if state in set(data["diagnostic_state"].dropna().astype(str))
+    ]
+    colors = [DIAGNOSTIC_COLORS[state] for state in states]
+    x_scale = (
+        alt.Scale(zero=False, domain=x_domain)
+        if x_domain is not None
+        else alt.Scale(zero=False)
+    )
+    y_scale = (
+        alt.Scale(zero=False, reverse=y_reverse, domain=y_domain)
+        if y_domain is not None
+        else alt.Scale(zero=False, reverse=y_reverse)
+    )
+    layers = []
+    for index, state in enumerate(states):
+        style = DIAGNOSTIC_MARKS[state]
+        state_data = data[data["diagnostic_state"].eq(state)]
+        layers.append(
+            alt.Chart(state_data)
+            .mark_point(
+                shape=style["shape"],
+                size=style["size"],
+                opacity=style["opacity"],
+                filled=style["filled"],
+                strokeWidth=2 if not style["filled"] else 0.5,
+            )
+            .encode(
+                x=alt.X(
+                    f"{x}:Q",
+                    title=None if hide_axes else x_title,
+                    axis=_hidden_axis() if hide_axes else alt.Axis(),
+                    scale=x_scale,
+                ),
+                y=alt.Y(
+                    f"{y}:Q",
+                    title=None if hide_axes else y_title,
+                    axis=_hidden_axis() if hide_axes else alt.Axis(),
+                    scale=y_scale,
+                ),
+                color=alt.Color(
+                    "diagnostic_state:N",
+                    scale=alt.Scale(domain=states, range=colors),
+                    legend=(
+                        alt.Legend(
+                            title=None,
+                            orient="bottom",
+                            columns=legend_columns,
+                            labelLimit=160,
+                            symbolLimit=8,
+                        )
+                        if index == 0
+                        else None
+                    ),
+                ),
+                tooltip=tooltip,
+            )
+        )
+    return layers
+
+
+def _selected_case_layer(
+    data: pd.DataFrame,
+    *,
+    selected_source_id: int | None,
+    x: str,
+    y: str,
+    tooltip: list[alt.Tooltip],
+    y_reverse: bool = False,
+) -> alt.Chart | None:
+    if selected_source_id is None or "source_id" not in data.columns:
+        return None
+    selected = data[data["source_id"].eq(selected_source_id)]
+    if selected.empty:
+        return None
+    return (
+        alt.Chart(selected)
+        .mark_point(
+            shape="diamond",
+            size=360,
+            filled=False,
+            color="#e15759",
+            strokeWidth=3,
+        )
         .encode(
-            x=alt.X(f"{x}:Q", title=x, scale=alt.Scale(zero=False)),
-            y=alt.Y(f"{y}:Q", title=f"{y} (mag)", scale=alt.Scale(zero=False, reverse=True)),
-            color=alt.Color("class:N", scale=CLASS_COLORS, legend=alt.Legend(title=None, orient="bottom")),
-            size=alt.condition("datum.class == 'WR'", alt.value(60), alt.value(22)),
-            opacity=alt.condition("datum.class == 'WR'", alt.value(0.9), alt.value(0.45)),
+            x=alt.X(f"{x}:Q"),
+            y=alt.Y(
+                f"{y}:Q",
+                scale=alt.Scale(zero=False, reverse=y_reverse),
+            ),
             tooltip=tooltip,
         )
     )
-    layers = [points]
-    if selected_source_id is not None:
-        selected = data[data["source_id"].eq(selected_source_id)]
-        if not selected.empty:
-            layers.append(
-                alt.Chart(selected)
-                .mark_point(shape="diamond", size=420, filled=False, color="#e15759", strokeWidth=3)
-                .encode(x=alt.X(f"{x}:Q"), y=alt.Y(f"{y}:Q", scale=alt.Scale(zero=False, reverse=True)), tooltip=tooltip)
-            )
-    return alt.layer(*layers).interactive().properties(width="container", height=420)
+
+
+def _axis_label(column: str) -> str:
+    labels = {
+        "BP_RP": "BP - RP",
+        "G_BP": "G - BP",
+        "G_RP": "G - RP",
+        "J_H": "J - H",
+        "J_K": "J - Ks",
+        "H_K": "H - Ks",
+        "W1_W2": "W1 - W2",
+        "galactic_l": "Galactic longitude (deg)",
+        "galactic_b": "Galactic latitude (deg)",
+        "distance_kpc": "Distance (kpc)",
+        "galactocentric_x_kpc": "Galactocentric X (kpc)",
+        "galactocentric_y_kpc": "Galactocentric Y (kpc)",
+    }
+    if column in labels:
+        return labels[column]
+    if column in {"G", "BP", "RP", "J", "H", "Ks", "W1", "W2"}:
+        return f"{column} (mag)"
+    return column.replace("_", " ")
+
+
+def _hidden_axis() -> alt.Axis:
+    return alt.Axis(
+        labels=False,
+        ticks=False,
+        domain=False,
+        grid=False,
+        title=None,
+    )

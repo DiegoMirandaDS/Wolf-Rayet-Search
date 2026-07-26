@@ -1,0 +1,170 @@
+paths_config: configs/paths.yaml
+filters_config: configs/filters.yaml
+
+build:
+  pool_build_id: pool_exact_union_acquisition_v1
+  status: ready_for_full_build
+  eligibility_policy: exact_variant_union_annotations
+  allow_mutation: true
+  # Opened after the query-complete smoke build and idempotent-resume audit.
+  full_build_enabled: true
+
+output_db: data/databases/prediction_pool_exact_union_v1.duckdb
+staging_dir: data/raw/prediction_pool_exact_union_v1
+output_dir: data/processed/prediction_pool_exact_union_v1/acquisition
+manifest_dir: data/processed/prediction_pool_exact_union_v1/manifests
+
+parquet:
+  compression: zstd
+
+gaia:
+  credentials_env_file: .env
+  credentials_file_env: GAIA_CREDENTIALS_FILE
+  login_data_server: false
+  cleanup_async_jobs: true
+  cleanup_staging_after_validated_ingest: true
+  output_format: csv
+  max_retries: 3
+  retry_sleep_seconds: 30
+  continue_on_tile_error: true
+  # Same-table columns are cheap to retain and avoid future Gaia re-queries for
+  # astrometric, quality, variability and contextual model experiments.
+  extra_source_columns:
+    galactic_l: l
+    galactic_b: b
+    pmra_error: pmra_error
+    pmdec_error: pmdec_error
+    ruwe: ruwe
+    astrometric_excess_noise: astrometric_excess_noise
+    astrometric_excess_noise_sig: astrometric_excess_noise_sig
+    visibility_periods_used: visibility_periods_used
+    ipd_gof_harmonic_amplitude: ipd_gof_harmonic_amplitude
+    ipd_frac_multi_peak: ipd_frac_multi_peak
+    phot_g_n_obs: phot_g_n_obs
+    phot_bp_n_obs: phot_bp_n_obs
+    phot_rp_n_obs: phot_rp_n_obs
+    G_flux_over_error: phot_g_mean_flux_over_error
+    BP_flux_over_error: phot_bp_mean_flux_over_error
+    RP_flux_over_error: phot_rp_mean_flux_over_error
+    phot_bp_rp_excess_factor: phot_bp_rp_excess_factor
+    phot_bp_n_contaminated_transits: phot_bp_n_contaminated_transits
+    phot_bp_n_blended_transits: phot_bp_n_blended_transits
+    phot_rp_n_contaminated_transits: phot_rp_n_contaminated_transits
+    phot_rp_n_blended_transits: phot_rp_n_blended_transits
+    duplicated_source: duplicated_source
+    non_single_star: non_single_star
+    phot_variable_flag: phot_variable_flag
+    has_xp_sampled: has_xp_sampled
+    radial_velocity: radial_velocity
+    radial_velocity_error: radial_velocity_error
+    ag_gspphot: ag_gspphot
+    ebpminrp_gspphot: ebpminrp_gspphot
+    teff_gspphot: teff_gspphot
+    logg_gspphot: logg_gspphot
+    mh_gspphot: mh_gspphot
+  # Optional validation features; none is required for pool eligibility.
+  astrophysical_parameters_columns:
+    halpha_ew: ew_espels_halpha
+    halpha_ew_error: ew_espels_halpha_uncertainty
+    halpha_ew_flag: ew_espels_halpha_flag
+    espels_class: classlabel_espels
+    espels_class_flag: classlabel_espels_flag
+    espels_wc_probability: classprob_espels_wcstar
+    espels_wn_probability: classprob_espels_wnstar
+    espels_be_probability: classprob_espels_bestar
+    espels_pne_probability: classprob_espels_pne
+
+safety:
+  # The extended-column estimate is ~67 GB decimal. This leaves room for
+  # Parquet, transient CSV downloads, manifests and DuckDB metadata.
+  max_local_bytes: 120000000000
+  # Four concurrent Gaia jobs is materially faster without being abusive to TAP.
+  max_workers: 8
+  ingest_workers: 1
+
+tiling:
+  # The previous build proved that 10x10 works over most of the sky. Only the
+  # nine dense parents below are pre-split to 5x5, yielding 675 jobs instead of
+  # 2,592 uniform 5x5 jobs.
+  ra_step_deg: 10.0
+  dec_step_deg: 10.0
+  subtile_ra_step_deg: 5.0
+  subtile_dec_step_deg: 5.0
+  pre_subdivide_parent_tile_ids:
+    - ra260p00_270p00__dec-20p00_-10p00
+    - ra260p00_270p00__dec-30p00_-20p00
+    - ra260p00_270p00__dec-60p00_-50p00
+    - ra260p00_270p00__dec-70p00_-60p00
+    - ra270p00_280p00__dec-20p00_-10p00
+    - ra270p00_280p00__dec-30p00_-20p00
+    - ra270p00_280p00__dec-60p00_-50p00
+    - ra270p00_280p00__dec-70p00_-60p00
+    - ra280p00_290p00__dec-30p00_-20p00
+  stale_running_minutes: 120
+
+photometry:
+  # These lists define the current exact variants. They are evaluated locally.
+  twomass_allowed_qualities: ["A", "B"]
+  wise_allowed_qualities: ["A", "B"]
+  # Match distance, ambiguity counts and archive match flags are retained so a
+  # stricter counterpart-quality policy can be tested without querying again.
+  include_crossmatch_diagnostics: true
+  allwise_extra_columns:
+    wise_cc_flags: cc_flags
+    wise_ext_flag: ext_flag
+    wise_var_flag: var_flag
+
+monitoring:
+  progress_every_tiles: 5
+
+astrometry:
+  min_parallax:
+  min_parallax_over_error:
+
+color_envelope:
+  # relaxed_photometry contains the broadest current WR reference population.
+  variants:
+    - relaxed_photometry
+  colors:
+    - G_BP
+    - G_RP
+    - BP_RP
+    - J_H
+    - J_K
+    - H_K
+    - W1_W2
+  # Include finite WR locus outliers: the envelope is an acquisition boundary,
+  # not a model eligibility decision.
+  use_kept_rows: false
+  # Locus, quality and astrometric rules are all deferred to local annotation.
+  server_side_locus_filter: false
+  server_side_quality_filter: false
+  padding:
+    # At least 0.15 mag on each side, or 5% of the observed WR span when larger.
+    span_fraction: 0.05
+    absolute:
+      G_BP: 0.15
+      G_RP: 0.15
+      BP_RP: 0.15
+      J_H: 0.15
+      J_K: 0.15
+      H_K: 0.15
+      W1_W2: 0.15
+  coverage_validation:
+    require_all_finite_reference_rows: true
+
+exact_union:
+  mask_major_version: 1
+  variants:
+    - strict_photometry
+    - strict_parallax_soft
+    - strict_poe_1
+    - strict_poe_2
+    - strict_poe_3
+    - strict_poe_5
+    - relaxed_photometry
+    - relaxed_parallax_soft
+    - relaxed_poe_1
+    - relaxed_poe_2
+    - relaxed_poe_3
+    - relaxed_poe_5
