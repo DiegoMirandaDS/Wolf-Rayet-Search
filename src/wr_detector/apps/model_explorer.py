@@ -15,7 +15,15 @@ import argparse
 import streamlit as st
 
 from wr_detector.apps.explorer_ui import data
-from wr_detector.apps.explorer_ui.pages import cases_page, compare, layers_page, model_detail, overview, stats_page
+from wr_detector.apps.explorer_ui.pages import (
+    candidate_stack_page,
+    cases_page,
+    compare,
+    layers_page,
+    model_detail,
+    overview,
+    stats_page,
+)
 from wr_detector.modeling.explorer import explorer_db_path
 
 
@@ -37,6 +45,12 @@ def main() -> None:
         st.Page(cases_page.render, title="Case review", icon=":material/travel_explore:", url_path="cases"),
         st.Page(stats_page.render, title="Statistics", icon=":material/insights:", url_path="stats"),
         st.Page(layers_page.render, title="Validation layers", icon=":material/layers:", url_path="layers"),
+        st.Page(
+            candidate_stack_page.render,
+            title="Candidate stack",
+            icon=":material/account_tree:",
+            url_path="candidate-stack",
+        ),
     ]
     navigation = st.navigation(pages)
 

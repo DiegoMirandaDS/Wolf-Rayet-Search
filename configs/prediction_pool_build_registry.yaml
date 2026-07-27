@@ -1,0 +1,84 @@
+schema_version: prediction_pool_build_registry_v1
+
+builds:
+  - pool_build_id: pool_legacy_aggregated_mean_fit_20260609_v1
+    status: legacy_read_only
+    eligibility_policy: aggregated_mean_fit
+    scientific_use: audit_only_not_approved_for_definitive_scoring
+    limitation: >-
+      The local mean-slope/mean-intercept aggregate is not a superset of the
+      compatible exact-locus union and irreversibly omitted eligible sources.
+    database_path: data/databases/prediction_pool.duckdb
+    database_sha256_observed_20260722: f61b312cf38889da1dd6512637448af6fdc714dfcfb17dbeb4e5d9b469fd78f0
+    config_path: configs/prediction_pool.yaml
+    config_sha256_observed_before_read_only_guard: f52b3b9d4043a1b1d4ca1574ea863891dd3e2f10671cb13c6e3165f7ad32c21b
+    current_read_only_config_sha256: 8d5cc16fbf84f48881e65cab0b8e8dfc0b33968317316b5bdcff51a14dda4e19
+    code_git_commit_at_audit: 2b88bf2e4eb63230df643d9af13a3fddd0ec4db2
+    source_rows: 58037788
+    effective_tiles: 675
+    parquet_bytes: 10830232670
+    raw_acquisition_retained: false
+    exact_variant_mask_available: false
+    may_be_overwritten: false
+    superseded_by_pool_build_id:
+    audit_run_ids:
+      - pilot_20260721_locus_union_v1
+      - audit_20260722_exact_union_spatial_v1
+
+  - pool_build_id: pool_exact_union_acquisition_v1
+    status: ready_for_full_build
+    eligibility_policy: exact_variant_union_annotations
+    scientific_use: >-
+      all-bands intra-mission acquisition for the current strict/relaxed model
+      families; Gaia/VizieR archive-path limitation remains documented
+    config_path: configs/prediction_pool_exact_union.yaml
+    database_path: data/databases/prediction_pool_exact_union_v1.duckdb
+    acquisition_path: data/processed/prediction_pool_exact_union_v1/acquisition
+    acquisition_envelope_schema: wr_intra_mission_acquisition_envelope_v1
+    acquisition_envelope_sha256_observed_20260724: 3103ef3925ac9cbb99d08bd5dc32b5f77b78561e301c09e9c7f8fa0612122a12
+    finite_wr_reference_rows: 347
+    finite_wr_reference_rows_covered: 347
+    server_side_locus_filter: false
+    server_side_quality_filter: false
+    full_build_enabled: true
+    execution:
+      base_tiles_deg: 10
+      dense_subtiles_deg: 5
+      effective_queries: 675
+      concurrent_gaia_jobs: 4
+      resumable_by_validated_tile: true
+    smoke_validation:
+      pool_build_id: pool_exact_union_smoke_v1
+      completed_at: "2026-07-24"
+      regions: 3
+      acquired_rows: 9099
+      distinct_source_ids: 9099
+      accepted_union: 3868
+      eligible_after_known_exclusion: 3864
+      parquet_bytes: 3971509
+      bytes_per_acquisition_row: 436.4775
+      extended_columns_validated: true
+      halpha_join_validated: true
+      crossmatch_diagnostics_validated: true
+      identical_resume_tiles_completed: 0
+      identical_resume_tiles_skipped: 3
+    expanded_validation:
+      pool_build_id: pool_exact_union_validation_18regions_v1
+      regions: 18
+      acquired_rows: 65210
+      distinct_source_ids: 65210
+      accepted_union: 28858
+      eligible_after_known_exclusion: 28847
+      parquet_bytes: 17199908
+      bytes_per_acquisition_row: 263.7618
+      identical_resume_tiles_completed: 0
+      identical_resume_tiles_skipped: 18
+      artifact_audit_status: passed
+      estimated_full_rows_current_join: 154035172
+      estimated_full_gib_base_columns: 37.84
+      estimated_full_gib_extended_columns: 62.62
+      wr_gaia_core_available: 347
+      wr_tmass_best_neighbour_available: 343
+      wr_allwise_best_neighbour_available: 249
+      wr_with_both_best_neighbours_inside_envelope: 249
+    supersedes_pool_build_id: pool_legacy_aggregated_mean_fit_20260609_v1

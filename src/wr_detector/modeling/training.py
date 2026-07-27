@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from pathlib import Path
+import subprocess
 from time import perf_counter
 
+import duckdb
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -29,7 +32,12 @@ from sklearn.metrics import (
 
 from wr_detector.config import load_yaml, resolve_path
 from wr_detector.modeling.benchmark import _format_seconds, _repeated_oof_predict_proba
-from wr_detector.modeling.data import build_model_matrix, ensure_parent_dir, load_modeling_dataset
+from wr_detector.modeling.data import (
+    build_model_matrix,
+    ensure_parent_dir,
+    load_modeling_dataset,
+    modeling_dataset_paths,
+)
 from wr_detector.modeling.estimators import build_model_pipeline, positive_class_weight
 from wr_detector.modeling.evaluation import compute_binary_metrics, compute_ranking_metrics, select_threshold
 from wr_detector.modeling.history import cleanup_unreferenced_model_artifacts, make_project_relative, make_training_run_id, sync_training_history_frame
@@ -40,6 +48,254 @@ from wr_detector.modeling.negative_reduction import (
     reduced_dataset_path,
 )
 from wr_detector.modeling.splits import make_cv
+
+
+def build_run_lineage(
+    config_path: str | Path,
+    config: dict,
+) -> dict[str, object]:
+    """Describe the immutable configuration and current source state."""
+    resolved_config = resolve_path(config_path)
+    paths_config = resolve_path(config["paths_config"])
+    filters_config = resolve_path(config["filters_config"])
+    git = git_worktree_lineage()
+    return {
+        "models_config_path": make_project_relative(resolved_config),
+        "models_config_sha256": file_sha256(resolved_config),
+        "paths_config_sha256": file_sha256(paths_config),
+        "filters_config_sha256": file_sha256(filters_config),
+        "code_git_commit": git["commit"],
+        "code_git_dirty": git["dirty"],
+        "code_worktree_sha256": git["worktree_sha256"],
+    }
+
+
+def build_dataset_lineage(
+    config: dict,
+    *,
+    variant: str,
+    negative_ratio: int | str,
+    dataset_path: str | Path,
+) -> dict[str, object]:
+    """Describe the reduced dataset and its positive/negative source exports."""
+    resolved_dataset = resolve_path(dataset_path)
+    filters = load_yaml(config["filters_config"])
+    paths = load_yaml(config["paths_config"])
+    reference_path, negative_path = modeling_dataset_paths(
+        filters,
+        paths,
+        variant,
+        config.get("modeling_dataset", {}),
+    )
+    reference_sha = (
+        file_sha256(reference_path) if reference_path.exists() else None
+    )
+    negative_sha = (
+        file_sha256(negative_path) if negative_path.exists() else None
+    )
+    source = str(
+        config.get("modeling_dataset", {}).get("source", "base")
+    )
+    return {
+        "dataset_path": make_project_relative(resolved_dataset),
+        "dataset_sha256": file_sha256(resolved_dataset),
+        "reference_dataset_path": make_project_relative(reference_path),
+        "reference_dataset_sha256": reference_sha,
+        "negative_dataset_path": make_project_relative(negative_path),
+        "negative_dataset_sha256": negative_sha,
+        "locus_run_id": (
+            f"legacy_exact_{variant}_{reference_sha[:12]}"
+            if source == "color_locus" and reference_sha
+            else None
+        ),
+        "modeling_dataset_source": source,
+        "require_color_locus_keep": bool(
+            config.get("modeling_dataset", {}).get(
+                "require_color_locus_keep", False
+            )
+        ),
+        "holdout_fraction": float(config["holdout_fraction"]),
+        "split_policy": (
+            "source_id_hash_stratified_holdout_before_negative_reduction_v1"
+        ),
+        "negative_reduction_method": str(
+            config.get("negative_reduction", {}).get(
+                "method", "color_quantile_stratified"
+            )
+        ),
+        "lineage_negative_ratio": negative_ratio_label(negative_ratio),
+    }
+
+
+def git_worktree_lineage() -> dict[str, object]:
+    """Fingerprint committed and publishable uncommitted source state."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        untracked_raw = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        digest = sha256(diff)
+        for raw_path in sorted(
+            value for value in untracked_raw.split(b"\0") if value
+        ):
+            path = Path(raw_path.decode("utf-8"))
+            digest.update(raw_path)
+            if path.is_file():
+                digest.update(path.read_bytes())
+        return {
+            "commit": commit,
+            "dirty": bool(status.strip()),
+            "worktree_sha256": digest.hexdigest(),
+        }
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return {"commit": None, "dirty": None, "worktree_sha256": None}
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def resolve_positive_cohort(
+    config: dict,
+    cohort_name: str,
+) -> dict[str, object]:
+    """Resolve a versioned positive-source cohort without touching negatives."""
+    cohorts = config.get("positive_cohorts", {"all": {"type": "all"}})
+    if cohort_name not in cohorts:
+        raise KeyError(
+            f"Unknown positive cohort {cohort_name!r}; "
+            f"available={sorted(cohorts)}"
+        )
+    cohort_config = dict(cohorts[cohort_name])
+    cohort_type = str(cohort_config.get("type", "all"))
+    if cohort_type == "all":
+        contract = {"name": cohort_name, "type": "all"}
+        return {
+            "name": cohort_name,
+            "type": cohort_type,
+            "source_ids": None,
+            "source_count": None,
+            "contract": contract,
+            "contract_sha256": canonical_json_sha256(contract),
+            "source_ids_sha256": None,
+        }
+    if cohort_type != "gaia_reference_match_method":
+        raise ValueError(
+            f"Unsupported positive cohort type: {cohort_type!r}"
+        )
+    db_path = resolve_path(cohort_config["reference_db"])
+    twomass_method = str(cohort_config["twomass_match_method"])
+    wise_method = str(cohort_config["wise_match_method"])
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        rows = con.execute(
+            """
+            SELECT DISTINCT t.source_id
+            FROM twomass_matches t
+            INNER JOIN wise_matches w USING (source_id)
+            WHERE t.match_method = ? AND w.match_method = ?
+              AND t.source_id IS NOT NULL
+            ORDER BY t.source_id
+            """,
+            [twomass_method, wise_method],
+        ).fetchall()
+    source_ids = tuple(int(row[0]) for row in rows)
+    source_payload = "\n".join(str(value) for value in source_ids)
+    contract = {
+        "name": cohort_name,
+        "type": cohort_type,
+        "reference_db": make_project_relative(db_path),
+        "reference_db_sha256": file_sha256(db_path),
+        "twomass_match_method": twomass_method,
+        "wise_match_method": wise_method,
+    }
+    return {
+        "name": cohort_name,
+        "type": cohort_type,
+        "source_ids": frozenset(source_ids),
+        "source_count": len(source_ids),
+        "contract": contract,
+        "contract_sha256": canonical_json_sha256(contract),
+        "source_ids_sha256": sha256(
+            source_payload.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def apply_positive_cohort(
+    frame: pd.DataFrame,
+    cohort: dict[str, object],
+    *,
+    prefix: str,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Filter only positive rows, preserving every negative and split label."""
+    target = frame["target"].astype(int)
+    positive = target.eq(1)
+    source_ids = cohort["source_ids"]
+    if source_ids is None:
+        keep = pd.Series(True, index=frame.index)
+    else:
+        keep = ~positive | frame["source_id"].isin(source_ids)
+    out = frame.loc[keep].copy()
+    positives_before = int(positive.sum())
+    positives_after = int(out["target"].astype(int).eq(1).sum())
+    negatives_before = int(target.eq(0).sum())
+    negatives_after = int(out["target"].astype(int).eq(0).sum())
+    if negatives_before != negatives_after:
+        raise AssertionError("Positive cohort filtering modified negatives.")
+    return out, {
+        f"{prefix}_cohort": str(cohort["name"]),
+        f"{prefix}_cohort_type": str(cohort["type"]),
+        f"{prefix}_cohort_contract_json": json.dumps(
+            cohort["contract"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        f"{prefix}_cohort_contract_sha256": cohort["contract_sha256"],
+        f"{prefix}_cohort_source_ids_sha256": cohort[
+            "source_ids_sha256"
+        ],
+        f"{prefix}_cohort_catalog_source_count": cohort["source_count"],
+        f"{prefix}_positives_before": positives_before,
+        f"{prefix}_positives_after": positives_after,
+        f"{prefix}_positives_removed": (
+            positives_before - positives_after
+        ),
+        f"{prefix}_negatives": negatives_after,
+    }
+
+
+def canonical_json_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
 
 
 def train_models(
@@ -55,8 +311,17 @@ def train_models(
     resume_run: bool = False,
     reduce_if_missing: bool = True,
     verbose: bool = False,
+    train_positive_cohort: str = "all",
+    evaluation_positive_cohort: str = "all",
 ) -> pd.DataFrame:
     config = load_yaml(config_path)
+    run_lineage = build_run_lineage(config_path, config)
+    train_cohort = resolve_positive_cohort(
+        config, train_positive_cohort
+    )
+    evaluation_cohort = resolve_positive_cohort(
+        config, evaluation_positive_cohort
+    )
     run_id = run_id or make_training_run_id(config_path)
     selected_variants = variants or list(config["dataset_variants"])
     selected_models = models or list(config["models"])
@@ -73,9 +338,28 @@ def train_models(
     for variant in selected_variants:
         for negative_ratio in selected_ratios:
             dataset = load_reduced_or_source_dataset(config, variant, negative_ratio=negative_ratio, reduce_if_missing=reduce_if_missing)
+            dataset_path = reduced_dataset_path(
+                config, variant, negative_ratio=negative_ratio
+            )
+            dataset_lineage = build_dataset_lineage(
+                config,
+                variant=variant,
+                negative_ratio=negative_ratio,
+                dataset_path=dataset_path,
+            )
             train_df = dataset[dataset["modeling_split"] == "train"].copy()
             calibration_df = dataset[dataset["modeling_split"] == "threshold_calibration"].copy()
             holdout_df = dataset[dataset["modeling_split"] == "holdout"].copy()
+            train_df, train_cohort_lineage = apply_positive_cohort(
+                train_df,
+                train_cohort,
+                prefix="train_positive",
+            )
+            holdout_df, evaluation_cohort_lineage = apply_positive_cohort(
+                holdout_df,
+                evaluation_cohort,
+                prefix="evaluation_positive",
+            )
             for feature_set_name in selected_feature_sets:
                 feature_columns = list(config["feature_sets"][feature_set_name])
                 x_train, y_train = build_model_matrix(train_df, feature_columns)
@@ -95,6 +379,10 @@ def train_models(
                             feature_set_name=feature_set_name,
                             model_name=model_name,
                             sampler_name=sampler_name,
+                            train_positive_cohort=train_positive_cohort,
+                            evaluation_positive_cohort=(
+                                evaluation_positive_cohort
+                            ),
                         )
                         if key in completed_keys:
                             if verbose:
@@ -130,6 +418,16 @@ def train_models(
                                 train_identity=train_identity,
                                 holdout_identity=holdout_identity,
                                 n_iter=n_iter,
+                                lineage={
+                                    **run_lineage,
+                                    **dataset_lineage,
+                                    **train_cohort_lineage,
+                                    **evaluation_cohort_lineage,
+                                    "feature_columns_json": json.dumps(
+                                        feature_columns,
+                                        separators=(",", ":"),
+                                    ),
+                                },
                             )
                         except ImportError:
                             if bool(model_config.get("optional", False)):
@@ -221,11 +519,32 @@ def merge_training_results(previous: pd.DataFrame, current: pd.DataFrame) -> pd.
             previous["run_id"] = "legacy_csv"
         if "run_id" not in current.columns:
             current["run_id"] = "legacy_csv"
+    for cohort_column in [
+        "train_positive_cohort",
+        "evaluation_positive_cohort",
+    ]:
+        if (
+            cohort_column in previous.columns
+            or cohort_column in current.columns
+        ):
+            if cohort_column not in previous.columns:
+                previous[cohort_column] = "all"
+            if cohort_column not in current.columns:
+                current[cohort_column] = "all"
     key = ["dataset_variant", "feature_set", "model", "sampler"]
     if "negative_ratio_label" in previous.columns or "negative_ratio_label" in current.columns:
         key.insert(1, "negative_ratio_label")
     if "run_id" in previous.columns or "run_id" in current.columns:
         key.insert(0, "run_id")
+    for cohort_column in [
+        "train_positive_cohort",
+        "evaluation_positive_cohort",
+    ]:
+        if (
+            cohort_column in previous.columns
+            or cohort_column in current.columns
+        ):
+            key.append(cohort_column)
     if previous.empty:
         return current
     previous_keyed = previous.set_index(key, drop=False)
@@ -254,6 +573,7 @@ def train_one_configuration(
     n_iter: int | None,
     train_identity: pd.DataFrame | None = None,
     holdout_identity: pd.DataFrame | None = None,
+    lineage: dict[str, object] | None = None,
 ) -> dict[str, object]:
     random_state = int(config.get("random_state", 42))
     cv_cfg = config["cv"]
@@ -264,7 +584,18 @@ def train_one_configuration(
         random_state=random_state,
     )
     sampler_type = str(sampler_config.get("type", "none"))
-    weight = 1.0 if sampler_type != "none" else positive_class_weight(y_train)
+    observed_class_ratio = positive_class_weight(y_train)
+    weight = 1.0 if sampler_type != "none" else observed_class_ratio
+    imbalance_strategy = (
+        "estimator_native_class_weight"
+        if sampler_type == "none"
+        else "resampling_only"
+    )
+    imbalance_parameter = estimator_imbalance_parameter(
+        estimator_name=str(model_config["estimator"]),
+        sampler_type=sampler_type,
+        positive_weight=weight,
+    )
     pipeline = build_model_pipeline(
         model_config,
         random_state=random_state,
@@ -303,6 +634,12 @@ def train_one_configuration(
         min_accuracy=0.0,
         min_balanced_accuracy=float(config["selection"].get("min_balanced_accuracy", 0.0)),
     )
+    calibration_diagnostics = threshold_calibration_diagnostics(
+        fitted=fitted,
+        x_calibration=x_calibration,
+        y_calibration=y_calibration,
+        threshold=float(threshold["threshold"]),
+    )
     cv_metrics = compute_binary_metrics(y_train, oof_score, threshold=float(threshold["threshold"]))
     train_score = fitted.predict_proba(x_train)[:, 1]
     holdout_score = fitted.predict_proba(x_holdout)[:, 1]
@@ -332,9 +669,39 @@ def train_one_configuration(
         train_metrics=train_metrics,
         holdout_metrics=holdout_metrics,
         holdout_ranking=holdout_ranking,
+        lineage={
+            **(lineage or {}),
+            "sampler_type": sampler_type,
+            "imbalance_strategy": imbalance_strategy,
+            "positive_class_weight": float(weight),
+            "training_negative_to_positive_ratio": float(
+                observed_class_ratio
+            ),
+            "imbalance_parameter_json": json.dumps(
+                imbalance_parameter,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "threshold_selection_method": (
+                "oof_train_positives_plus_unseen_calibration_negatives_v1"
+                if not x_calibration.empty
+                else "train_oof_all_classes_v1"
+            ),
+            "threshold_selection_positive_count": int(
+                y_train.astype(int).eq(1).sum()
+            ),
+            "threshold_selection_negative_count": int(
+                y_calibration.astype(int).eq(0).sum()
+                if not y_calibration.empty
+                else y_train.astype(int).eq(0).sum()
+            ),
+            "threshold_selection_rows": int(len(threshold_y)),
+            **calibration_diagnostics,
+        },
     )
     model_path = save_trained_model(config, fitted, row)
     row["model_path"] = make_project_relative(model_path)
+    row["model_sha256"] = file_sha256(model_path)
     artifact_paths = save_validation_artifacts(
         config=config,
         model=fitted,
@@ -383,10 +750,54 @@ def make_threshold_selection_scores(
     positive_scores = np.asarray(oof_score, dtype="float64")[positive_mask.to_numpy()]
     if x_calibration.empty:
         return y_train, np.asarray(oof_score, dtype="float64")
+    if y_calibration.astype(int).eq(1).any():
+        raise ValueError(
+            "threshold_calibration must contain negatives only; positive "
+            "threshold scores come from out-of-fold training predictions."
+        )
     calibration_scores = fitted.predict_proba(x_calibration)[:, 1]
     threshold_y = pd.concat([positive_y.reset_index(drop=True), y_calibration.reset_index(drop=True)], ignore_index=True)
     threshold_score = np.concatenate([positive_scores, calibration_scores])
     return threshold_y, threshold_score
+
+
+def threshold_calibration_diagnostics(
+    *,
+    fitted,
+    x_calibration: pd.DataFrame,
+    y_calibration: pd.Series,
+    threshold: float,
+) -> dict[str, float | int]:
+    """Summarize false-positive pressure in the untouched negative pool."""
+    if x_calibration.empty:
+        return {
+            "threshold_calibration_negative_count": 0,
+            "threshold_calibration_negative_pass_count": 0,
+            "threshold_calibration_negative_pass_rate": float("nan"),
+            "threshold_calibration_score_p50": float("nan"),
+            "threshold_calibration_score_p90": float("nan"),
+            "threshold_calibration_score_p95": float("nan"),
+            "threshold_calibration_score_p99": float("nan"),
+            "threshold_calibration_score_max": float("nan"),
+        }
+    if y_calibration.astype(int).eq(1).any():
+        raise ValueError("threshold_calibration diagnostics require negatives only.")
+    scores = np.asarray(
+        fitted.predict_proba(x_calibration)[:, 1],
+        dtype="float64",
+    )
+    passed = scores >= float(threshold)
+    quantiles = np.quantile(scores, [0.50, 0.90, 0.95, 0.99])
+    return {
+        "threshold_calibration_negative_count": int(len(scores)),
+        "threshold_calibration_negative_pass_count": int(passed.sum()),
+        "threshold_calibration_negative_pass_rate": float(passed.mean()),
+        "threshold_calibration_score_p50": float(quantiles[0]),
+        "threshold_calibration_score_p90": float(quantiles[1]),
+        "threshold_calibration_score_p95": float(quantiles[2]),
+        "threshold_calibration_score_p99": float(quantiles[3]),
+        "threshold_calibration_score_max": float(scores.max()),
+    }
 
 
 def make_constrained_fbeta_scorer(config: dict):
@@ -464,6 +875,7 @@ def build_training_row(
     train_metrics: dict[str, object],
     holdout_metrics: dict[str, object],
     holdout_ranking: dict[str, object],
+    lineage: dict[str, object] | None = None,
 ) -> dict[str, object]:
     selection = config["selection"]
     stability = compute_model_stability_diagnostics(config, train_metrics, cv_metrics, holdout_metrics, holdout_ranking)
@@ -499,6 +911,7 @@ def build_training_row(
         "threshold_cv_accuracy": float(threshold.get("accuracy", np.nan)),
         "threshold_cv_balanced_accuracy": float(threshold.get("balanced_accuracy", np.nan)),
         "selection_status": status,
+        **(lineage or {}),
     }
     row.update(stability)
     row.update({f"cv_{key}": value for key, value in cv_metrics.items()})
@@ -506,6 +919,29 @@ def build_training_row(
     row.update({f"holdout_{key}": value for key, value in holdout_metrics.items()})
     row.update({f"holdout_{key}": value for key, value in holdout_ranking.items()})
     return row
+
+
+def estimator_imbalance_parameter(
+    *,
+    estimator_name: str,
+    sampler_type: str,
+    positive_weight: float,
+) -> dict[str, object]:
+    """Return the explicit estimator-side imbalance contract."""
+    if sampler_type != "none":
+        return {
+            "sampler": sampler_type,
+            "estimator_weighting": "neutral",
+        }
+    if estimator_name == "random_forest":
+        return {"class_weight": "balanced_subsample"}
+    if estimator_name == "hist_gradient_boosting":
+        return {"class_weight": {"0": 1.0, "1": float(positive_weight)}}
+    if estimator_name == "xgboost":
+        return {"scale_pos_weight": float(positive_weight)}
+    if estimator_name == "logistic_regression":
+        return {"class_weight": "balanced"}
+    return {"estimator_weighting": "unspecified"}
 
 
 def compute_model_stability_diagnostics(
@@ -596,11 +1032,7 @@ def _positive_ratio(value: float, scale: float) -> float:
 def save_trained_model(config: dict, model, row: dict[str, object]) -> Path:
     out_dir = run_artifact_dir(config, str(row.get("run_id", "")), "models")
     out_dir.mkdir(parents=True, exist_ok=True)
-    filename = (
-        f"{row['dataset_variant']}__neg_{row.get('negative_ratio_label', '10x')}__"
-        f"{row['feature_set']}__{row['model']}__{row['sampler']}"
-        f"__f2_{row['holdout_f2_wr']:.3f}.joblib"
-    )
+    filename = f"{_artifact_stem(row)}__f2_{row['holdout_f2_wr']:.3f}.joblib"
     path = out_dir / filename
     dump(model, path)
     return path
@@ -858,7 +1290,15 @@ def _save_feature_importance_plot(path: Path, table: pd.DataFrame) -> None:
 
 
 def _artifact_stem(row: dict[str, object]) -> str:
-    parts = [row["dataset_variant"], f"neg_{row.get('negative_ratio_label', '10x')}", row["feature_set"], row["model"], row["sampler"]]
+    parts = [
+        row["dataset_variant"],
+        f"neg_{row.get('negative_ratio_label', '10x')}",
+        f"train_{row.get('train_positive_cohort', 'all')}",
+        f"eval_{row.get('evaluation_positive_cohort', 'all')}",
+        row["feature_set"],
+        row["model"],
+        row["sampler"],
+    ]
     return "__".join(str(part).replace("/", "_").replace(" ", "_") for part in parts)
 
 
@@ -896,7 +1336,9 @@ def append_run_result(path: Path, row: dict[str, object]) -> None:
     results.to_csv(path, index=False)
 
 
-def completed_configuration_keys(results: pd.DataFrame) -> set[tuple[str, str, str, str, str]]:
+def completed_configuration_keys(
+    results: pd.DataFrame,
+) -> set[tuple[str, str, str, str, str, str, str]]:
     if results.empty:
         return set()
     return {
@@ -906,6 +1348,12 @@ def completed_configuration_keys(results: pd.DataFrame) -> set[tuple[str, str, s
             feature_set_name=str(row.feature_set),
             model_name=str(row.model),
             sampler_name=str(row.sampler),
+            train_positive_cohort=str(
+                getattr(row, "train_positive_cohort", "all")
+            ),
+            evaluation_positive_cohort=str(
+                getattr(row, "evaluation_positive_cohort", "all")
+            ),
         )
         for row in results.itertuples(index=False)
     }
@@ -918,5 +1366,15 @@ def configuration_key(
     feature_set_name: str,
     model_name: str,
     sampler_name: str,
-) -> tuple[str, str, str, str, str]:
-    return (variant, negative_ratio_label(negative_ratio), feature_set_name, model_name, sampler_name)
+    train_positive_cohort: str = "all",
+    evaluation_positive_cohort: str = "all",
+) -> tuple[str, str, str, str, str, str, str]:
+    return (
+        variant,
+        negative_ratio_label(negative_ratio),
+        feature_set_name,
+        model_name,
+        sampler_name,
+        train_positive_cohort,
+        evaluation_positive_cohort,
+    )

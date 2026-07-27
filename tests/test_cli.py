@@ -33,4 +33,9 @@ def test_explore_models_cli_builds_streamlit_command(monkeypatch):
     assert command[:4] == [cli.sys.executable, "-m", "streamlit", "run"]
     assert "--server.port" in command
     assert "8777" in command
+    assert command[command.index("--server.address") + 1] == "127.0.0.1"
+    assert command[command.index("--server.headless") + 1] == "true"
+    assert command[command.index("--server.enableCORS") + 1] == "true"
+    assert command[command.index("--server.enableXsrfProtection") + 1] == "true"
+    assert command[command.index("--browser.gatherUsageStats") + 1] == "false"
     assert command[-2:] == ["--config", "configs\\models.yaml"] or command[-2:] == ["--config", "configs/models.yaml"]

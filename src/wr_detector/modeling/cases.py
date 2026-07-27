@@ -12,7 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 
 from wr_detector.config import load_yaml, resolve_path
 from wr_detector.modeling.explorer import explorer_db_path
@@ -25,6 +28,26 @@ CASE_KINDS = {
     "false_negative": "WR ranked below threshold",
     "false_positive": "negative ranked above threshold",
     "true_negative": "negative ranked below threshold",
+}
+
+DIAGNOSTIC_BASES = {
+    "review_budget": "Review budget (top-K)",
+    "operating_threshold": "Operating threshold",
+}
+
+DIAGNOSTIC_STATES = {
+    "review_budget": [
+        "Background",
+        "Contaminant @K",
+        "WR outside @K",
+        "WR recovered @K",
+    ],
+    "operating_threshold": [
+        "True negative",
+        "False positive",
+        "False negative",
+        "True positive",
+    ],
 }
 
 
@@ -254,6 +277,137 @@ def case_confusion(cases: pd.DataFrame) -> dict[str, int]:
         "false_positive": int(((target == 0) & (predicted == 1)).sum()),
         "true_negative": int(((target == 0) & (predicted == 0)).sum()),
     }
+
+
+def classify_cases(
+    cases: pd.DataFrame,
+    *,
+    basis: str = "review_budget",
+    top_k: int = 100,
+) -> pd.DataFrame:
+    """Add an explicit diagnostic state without conflating rank and threshold.
+
+    ``review_budget`` describes whether a source falls inside a top-K manual
+    review list. ``operating_threshold`` uses the model's synchronized
+    threshold decision and therefore supports conventional TP/FP/FN/TN names.
+    """
+    if basis not in DIAGNOSTIC_BASES:
+        raise ValueError(f"Unsupported diagnostic basis: {basis}")
+    out = cases.copy()
+    target = out["target"].fillna(0).astype(int)
+    if basis == "review_budget":
+        selected = out["rank"].le(top_k)
+        out["diagnostic_state"] = np.select(
+            [
+                target.eq(1) & selected,
+                target.eq(0) & selected,
+                target.eq(1) & ~selected,
+            ],
+            ["WR recovered @K", "Contaminant @K", "WR outside @K"],
+            default="Background",
+        )
+    else:
+        if "predicted" in out.columns:
+            predicted = out["predicted"].fillna(0).astype(int)
+        else:
+            predicted = (
+                out["score"].astype(float)
+                >= out["threshold"].astype(float)
+            ).astype(int)
+        out["diagnostic_state"] = np.select(
+            [
+                target.eq(1) & predicted.eq(1),
+                target.eq(0) & predicted.eq(1),
+                target.eq(1) & predicted.eq(0),
+            ],
+            ["True positive", "False positive", "False negative"],
+            default="True negative",
+        )
+    out["diagnostic_basis"] = basis
+    return out
+
+
+def add_case_spatial_coordinates(
+    cases: pd.DataFrame,
+    *,
+    min_parallax_over_error: float = 2.0,
+    max_distance_kpc: float = 15.0,
+    sun_distance_kpc: float = 8.122,
+) -> pd.DataFrame:
+    """Add Galactic sky and qualified top-down plane coordinates.
+
+    Galactic longitude/latitude require only RA/Dec. Plane positions use the
+    transparent approximation ``distance_kpc = 1 / parallax_mas`` and are
+    populated only for positive parallaxes meeting the requested S/N floor and
+    distance cap.
+    """
+    out = cases.copy()
+    spatial_columns = [
+        "galactic_l",
+        "galactic_b",
+        "polar_x",
+        "polar_y",
+        "mollweide_x",
+        "mollweide_y",
+        "distance_kpc",
+        "galactocentric_x_kpc",
+        "galactocentric_y_kpc",
+    ]
+    for column in spatial_columns:
+        out[column] = np.nan
+    out["distance_plotted"] = False
+    if not {"ra", "dec"}.issubset(out.columns):
+        return out
+
+    sky_mask = out["ra"].notna() & out["dec"].notna()
+    if sky_mask.any():
+        coords = SkyCoord(
+            ra=out.loc[sky_mask, "ra"].to_numpy(dtype=float) * u.deg,
+            dec=out.loc[sky_mask, "dec"].to_numpy(dtype=float) * u.deg,
+            frame="icrs",
+        ).galactic
+        longitude = coords.l.wrap_at(360 * u.deg).degree
+        latitude = coords.b.degree
+        radius = 90.0 - latitude
+        theta = np.deg2rad(longitude)
+        out.loc[sky_mask, "galactic_l"] = longitude
+        out.loc[sky_mask, "galactic_b"] = latitude
+        out.loc[sky_mask, "polar_x"] = radius * np.sin(theta)
+        out.loc[sky_mask, "polar_y"] = radius * np.cos(theta)
+        # Standard Mollweide projection with Galactic longitude increasing
+        # towards the left, as customary in astronomical all-sky maps.
+        from wr_detector.modeling.case_visualization import mollweide_project
+
+        mollweide_x, mollweide_y = mollweide_project(longitude, latitude)
+        out.loc[sky_mask, "mollweide_x"] = mollweide_x
+        out.loc[sky_mask, "mollweide_y"] = mollweide_y
+
+    required = {"parallax", "parallax_over_error", "galactic_l", "galactic_b"}
+    if not required.issubset(out.columns):
+        return out
+    distance = 1.0 / out["parallax"].astype(float)
+    distance_mask = (
+        out["parallax"].gt(0)
+        & out["parallax_over_error"].ge(float(min_parallax_over_error))
+        & distance.le(float(max_distance_kpc))
+        & out["galactic_l"].notna()
+    )
+    if not distance_mask.any():
+        return out
+
+    longitude = np.deg2rad(out.loc[distance_mask, "galactic_l"].astype(float))
+    latitude = np.deg2rad(out.loc[distance_mask, "galactic_b"].astype(float))
+    qualified_distance = distance.loc[distance_mask]
+    plane_distance = qualified_distance * np.cos(latitude)
+    out.loc[distance_mask, "distance_kpc"] = qualified_distance
+    out.loc[distance_mask, "galactocentric_x_kpc"] = (
+        float(sun_distance_kpc) - plane_distance * np.cos(longitude)
+    )
+    out.loc[distance_mask, "galactocentric_y_kpc"] = (
+        plane_distance * np.sin(longitude)
+    )
+    out.loc[distance_mask, "distance_plotted"] = True
+    return out
 
 
 def _attach_reference_dbs(

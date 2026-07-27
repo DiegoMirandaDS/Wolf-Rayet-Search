@@ -1,0 +1,65 @@
+prediction_pool_config: configs/prediction_pool.yaml
+models_config: configs/models.yaml
+
+run_id: pilot_20260721_locus_union_v1
+reuse_existing_acquisitions: true
+
+# Small persistent acquisitions used only to audit whether the local aggregate
+# pool filter is a superset of the exact configured variant loci. These boxes
+# do not modify prediction_pool.duckdb or its parquet tiles.
+regions:
+  - name: galactic_center_extinction
+    description: "High-extinction Galactic-centre sightline near l=0, b=0."
+    ra_min: 266.229988
+    ra_max: 266.579988
+    dec_min: -29.111178
+    dec_max: -28.761178
+  - name: inner_plane_l30
+    description: "Dense inner-plane WR field near l=30, b=0."
+    ra_min: 280.836066
+    ra_max: 281.336066
+    dec_min: -2.864234
+    dec_max: -2.364234
+  - name: cygnus_l80
+    description: "Dense Cygnus WR field at a different Galactic longitude."
+    ra_min: 308.696173
+    ra_max: 309.196173
+    dec_min: 41.129064
+    dec_max: 41.629064
+  - name: anticenter_l180
+    description: "Galactic anticentre sightline near l=180, b=0."
+    ra_min: 85.904988
+    ra_max: 86.904988
+    dec_min: 28.436178
+    dec_max: 29.436178
+  - name: legacy_high_latitude
+    description: "Lower-density high-latitude field inside a legacy 5x5 raw CSV tile."
+    ra_min: 12.0
+    ra_max: 13.0
+    dec_min: -63.0
+    dec_max: -62.0
+    legacy_csv: data/raw/prediction_pool/ra010p00_015p00__dec-65p00_-60p00.csv
+    legacy_db: data/databases/prediction_pool_5x5_partial.duckdb
+
+exact_locus_variants:
+  - strict_photometry
+  - strict_parallax_soft
+  - strict_poe_2
+  - strict_poe_3
+  - relaxed_photometry
+  - relaxed_parallax_soft
+  - relaxed_poe_2
+  - relaxed_poe_3
+
+magnitude_bins: [0, 12, 14, 16, 18, 30]
+magnitude_labels: ["G<12", "12<=G<14", "14<=G<16", "16<=G<18", "G>=18"]
+
+legacy_lineage:
+  raw_dir: data/raw/prediction_pool
+  partial_db: data/databases/prediction_pool_5x5_partial.duckdb
+  main_db: data/databases/prediction_pool.duckdb
+
+outputs:
+  raw_dir_template: data/raw/prediction_pool_locus_pilot/{run_id}
+  data_dir_template: data/processed/prediction_pool_locus_pilot/{run_id}
+  report_dir_template: reports/analysis/prediction_pool_locus_pilot/{run_id}

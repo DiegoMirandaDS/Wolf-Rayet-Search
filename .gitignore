@@ -4,11 +4,16 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+tmp/
 .venv/
 venv/
 Avances.md
 .env
-.claude/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
 data.zip
 *.zip
 
@@ -18,10 +23,22 @@ data/raw/reference/*.html
 data/raw/reference/*.csv
 data/raw/simbad_negative/*.csv
 data/raw/prediction_pool/*
+data/raw/prediction_pool_exact_union_v1/*
+data/raw/prediction_pool_exact_union_smoke_v1/*
+data/raw/prediction_pool_exact_union_validation_v1/*
+data/raw/prediction_pool_locus_pilot/*
+data/raw/prediction_pool_locus_audit/*
 data/processed/reference/*.parquet
 data/processed/simbad_negative/*.parquet
 data/processed/modeling/*.parquet
 data/processed/prediction_pool/*
+data/processed/prediction_pool_exact_union_v1/*
+data/processed/prediction_pool_exact_union_smoke_v1/*
+data/processed/prediction_pool_exact_union_validation_v1/*
+data/processed/prediction_pool_locus_pilot/*
+data/processed/prediction_pool_locus_audit/*
+data/processed/prediction_pool_scores/*
+data/processed/prediction_pool_score_manifests/*
 data/interim/reference/*
 data/interim/simbad_negative/*
 
@@ -36,5 +53,10 @@ reports/modeling/figures/*
 reports/modeling/runs/*
 reports/modeling/second_layer/runs/*
 reports/modeling/artifacts/*
+reports/modeling/*.png
+reports/analysis/prediction_pool_locus_pilot/*
+reports/analysis/prediction_pool_locus_audit/*
+reports/public/_rendered_check/
+local/report_source/
 !reports/figures/.gitkeep
 !reports/tables/.gitkeep

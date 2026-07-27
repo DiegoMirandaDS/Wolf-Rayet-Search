@@ -29,7 +29,7 @@ class GWRCSnapshot:
 
 
 def download_html(url: str) -> bytes:
-    request = Request(url, headers={"User-Agent": "Wolf-Rayet-Detector/0.1"})
+    request = Request(url, headers={"User-Agent": "Wolf-Rayet-Search/0.1"})
     with urlopen(request, timeout=60) as response:
         return response.read()
 

@@ -1,0 +1,17 @@
+pool_config: configs/prediction_pool_exact_union.yaml
+models_config: configs/models.yaml
+
+output_db: data/databases/prediction_pool_scoring.duckdb
+output_dir: data/processed/prediction_pool_scores
+manifest_dir: data/processed/prediction_pool_score_manifests
+
+# Tiles are streamed in bounded record batches; a whole sky tile is never
+# materialized as a pandas frame solely for scoring.
+batch_rows: 250000
+compression: zstd
+
+safety:
+  # Full scoring is blocked until every tile declared by the exact-union pool
+  # config is registered as completed. --max-tiles remains available for a
+  # bounded post-training validation.
+  require_complete_pool: true

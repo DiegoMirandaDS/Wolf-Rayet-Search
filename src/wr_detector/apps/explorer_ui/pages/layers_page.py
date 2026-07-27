@@ -30,7 +30,8 @@ def render() -> None:
     st.title("Validation layers")
     st.caption(
         "Post-first-stage validators re-rank or sanity-check top candidates. "
-        "They are compatibility scorers, not hard rejection gates."
+        "They are compatibility scorers, not hard rejection gates. "
+        "This audit did not replace the operational first-stage ranking."
     )
 
     layer = st.selectbox(
@@ -63,13 +64,17 @@ def render() -> None:
     _lineage_section(results)
 
     total = len(results)
-    accepted = int(results["status"].eq("accepted").sum()) if "status" in results else 0
+    fitted = int(results["status"].eq("accepted").sum()) if "status" in results else 0
     retention = results.get("holdout_positive_retention")
     calib_pass = results.get("threshold_calibration_negative_pass_rate")
     ui.kpi_row(
         [
             ("Validators", f"{total:,}", "variant x features x method x subtype"),
-            ("Accepted", f"{accepted:,} ({accepted / total:.0%})" if total else "0", None),
+            (
+                "Fitted",
+                f"{fitted:,} ({fitted / total:.0%})" if total else "0",
+                "accepted means fit completed; it is not an operational recommendation",
+            ),
             ("Best WR retention", ui.fmt_pct(retention.max()) if retention is not None else "-", "Holdout positives kept at threshold"),
             ("Lowest calib pass", ui.fmt_pct(calib_pass.min()) if calib_pass is not None else "-", "Calibration negatives passing (lower is better)"),
         ]

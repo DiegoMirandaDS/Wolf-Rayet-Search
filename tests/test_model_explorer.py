@@ -4,15 +4,27 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pytest
+from streamlit.testing.v1 import AppTest
 
+from wr_detector.apps.explorer_ui.charts import (
+    color_magnitude,
+    dataset_heatmap,
+    galactic_plane_map,
+    galactic_polar_chart,
+    metric_bar,
+)
 from wr_detector.modeling.explorer import (
+    add_ranking_score,
     best_models_by_dataset,
+    enrich_model_results,
     filter_results,
     list_explorer_runs,
     load_feature_importance,
     load_prediction_summary,
     load_run_results,
     rank_models,
+    select_diverse_top_models,
 )
 
 
@@ -29,6 +41,80 @@ def test_explorer_lists_runs_and_enriches_results(tmp_path):
     assert results.set_index("feature_set").loc["colors_parallax_error", "includes_parallax_error"]
     assert "strict_photometry / colors_parallax / random_forest / smote / 10x" in set(results["model_label"])
     assert results.loc[results["dataset_variant"].eq("strict_photometry"), "holdout_wr_at_100_pct"].max() == 0.75
+    assert set(results["negative_train"]) == {180}
+    assert set(results["negative_holdout"]) == {80}
+
+
+def test_altair_charts_omit_optional_none_formats():
+    data = pd.DataFrame(
+        [
+            {
+                "short_label": "RF/none | strict_photometry",
+                "model": "random_forest",
+                "selection_status": "accepted",
+                "dataset_variant": "strict_photometry",
+                "sampler": "none",
+                "holdout_average_precision": 0.42,
+            }
+        ]
+    )
+
+    bar_spec = metric_bar(
+        data,
+        value_col="holdout_average_precision",
+        value_title="Average precision",
+    ).to_dict()
+    vertical_bar_spec = metric_bar(
+        data,
+        value_col="holdout_average_precision",
+        value_title="Average precision",
+        orientation="vertical",
+    ).to_dict()
+    heatmap_spec = dataset_heatmap(
+        data,
+        value_col="holdout_average_precision",
+        value_title="Average precision",
+    ).to_dict()
+
+    assert "format" not in bar_spec["encoding"]["x"]["axis"]
+    assert vertical_bar_spec["layer"][0]["encoding"]["x"]["sort"] == "-y"
+    assert "format" not in heatmap_spec["layer"][0]["encoding"]["color"]["legend"]
+
+
+def test_case_visualizations_compile_with_diagnostic_layers():
+    cases = pd.DataFrame(
+        {
+            "source_id": [1, 2, 3, 4],
+            "target": [0, 0, 1, 1],
+            "diagnostic_state": [
+                "Background",
+                "Contaminant @K",
+                "WR outside @K",
+                "WR recovered @K",
+            ],
+            "object_name": ["n1", "n2", "wr1", "wr2"],
+            "rank": [4, 2, 3, 1],
+            "score": [0.1, 0.8, 0.4, 0.9],
+            "BP_RP": [1.0, 1.2, 1.4, 1.6],
+            "G": [14.0, 13.0, 12.0, 11.0],
+            "galactic_l": [0.0, 90.0, 180.0, 270.0],
+            "galactic_b": [0.0, 5.0, -5.0, 10.0],
+            "polar_x": [0.0, 85.0, 0.0, -80.0],
+            "polar_y": [90.0, 0.0, -95.0, 0.0],
+            "distance_kpc": [1.0, 2.0, 3.0, 4.0],
+            "galactocentric_x_kpc": [7.0, 8.0, 10.0, 8.0],
+            "galactocentric_y_kpc": [0.0, 2.0, 0.0, -4.0],
+            "distance_plotted": [True] * 4,
+        }
+    )
+
+    cmd = color_magnitude(cases, selected_source_id=4).to_dict()
+    polar = galactic_polar_chart(cases, selected_source_id=4).to_dict()
+    plane = galactic_plane_map(cases, selected_source_id=4).to_dict()
+
+    assert len(cmd["layer"]) == 5
+    assert len(polar["layer"]) >= 7
+    assert len(plane["layer"]) >= 8
 
 
 def test_explorer_filters_and_ranks_models(tmp_path):
@@ -53,6 +139,104 @@ def test_explorer_filters_and_ranks_models(tmp_path):
     assert best.loc[best["dataset_variant"].eq("strict_photometry"), "model"].item() == "xgboost"
 
 
+def test_relative_recall_uses_each_models_positive_holdout_denominator():
+    results = enrich_model_results(
+        pd.DataFrame(
+            [
+                _selection_row("large_holdout", wr_holdout=100, wr_at_100=50),
+                _selection_row("small_holdout", wr_holdout=50, wr_at_100=40),
+            ]
+        )
+    )
+
+    ranked = rank_models(results, metric="holdout_recall_at_100")
+
+    assert ranked["result_id"].tolist() == ["small_holdout", "large_holdout"]
+    assert ranked.set_index("result_id").loc["small_holdout", "holdout_recall_at_100"] == 0.8
+    assert ranked.set_index("result_id").loc["large_holdout", "holdout_recall_at_100"] == 0.5
+    assert ranked.set_index("result_id").loc["small_holdout", "holdout_precision_at_100"] == 0.4
+
+
+def test_ranking_score_matches_weighted_metrics_and_soft_fpr_penalty():
+    scored = add_ranking_score(
+        pd.DataFrame(
+            [
+                {
+                    "holdout_recall_at_100": 0.8,
+                    "holdout_average_precision": 0.6,
+                    "holdout_precision_at_100": 0.4,
+                    "holdout_recall_at_50": 0.5,
+                    "holdout_precision_wr": 0.7,
+                    "holdout_recall_wr": 0.6,
+                    "holdout_fpr": 0.01,
+                }
+            ]
+        )
+    )
+
+    assert scored.loc[0, "ranking_metric_coverage"] == 1.0
+    assert scored.loc[0, "ranking_score"] == pytest.approx(0.635)
+
+
+def test_diverse_top_models_covers_profiles_without_duplicate_results():
+    rows = []
+    models = ["random_forest", "hist_gradient_boosting", "xgboost"]
+    samplers = ["none", "smote"]
+    variants = ["strict_photometry", "relaxed_poe_2"]
+    for index, (model, sampler, variant) in enumerate(
+        (model, sampler, variant)
+        for model in models
+        for sampler in samplers
+        for variant in variants
+    ):
+        strength = index / 20.0
+        rows.append(
+            {
+                "result_id": f"r{index}",
+                "model": model,
+                "sampler": sampler,
+                "dataset_variant": variant,
+                "feature_set": "colors_parallax_error" if index % 2 else "colors_parallax",
+                "holdout_recall_at_100": 0.5 + strength,
+                "holdout_average_precision": 0.8 - strength / 2,
+                "holdout_precision_at_100": 0.3 + (index % 4) / 10,
+                "holdout_recall_at_50": 0.2 + (index % 5) / 10,
+                "holdout_precision_wr": 0.4 + (index % 3) / 10,
+                "holdout_recall_wr": 0.5 + (index % 2) / 10,
+                "holdout_fpr": 0.001 + (11 - index) / 1000,
+            }
+        )
+
+    selected = select_diverse_top_models(pd.DataFrame(rows), top_n=10)
+
+    assert len(selected) == 10
+    assert selected["result_id"].is_unique
+    assert selected["rank"].tolist() == list(range(1, 11))
+    assert {
+        "Recall@100 leader",
+        "AP leader",
+        "Precision@100 leader",
+        "Threshold balance",
+        "Lowest FPR",
+        "Global balance",
+    }.issubset(set(selected["profile"]))
+
+
+def test_old_run_with_missing_selection_metrics_remains_rankable():
+    scored = add_ranking_score(
+        pd.DataFrame(
+            [
+                {"result_id": "old_a", "holdout_average_precision": 0.6},
+                {"result_id": "old_b", "holdout_average_precision": 0.5},
+            ]
+        )
+    )
+
+    assert scored["ranking_score"].notna().all()
+    assert scored["ranking_metric_coverage"].tolist() == [0.25, 0.25]
+    assert rank_models(scored, metric="ranking_score").iloc[0]["result_id"] == "old_a"
+
+
 def test_explorer_loads_optional_tables_and_handles_absent_predictions(tmp_path):
     config = _write_history_db(tmp_path, include_predictions=False)
 
@@ -63,6 +247,59 @@ def test_explorer_loads_optional_tables_and_handles_absent_predictions(tmp_path)
 
     assert importance["feature"].tolist() == ["BP_RP"]
     assert prediction_summary.empty
+
+
+def test_compact_active_model_picker_changes_only_after_apply():
+    source = """
+import pandas as pd
+from wr_detector.apps.explorer_ui.ui import active_model_control
+
+results = pd.DataFrame([
+    {
+        "result_id": "r_none",
+        "dataset_variant": "relaxed_photometry",
+        "feature_set": "colors_parallax_error",
+        "includes_parallax_error": True,
+        "model": "xgboost",
+        "sampler": "none",
+        "negative_ratio_label": "10x",
+        "selection_status": "accepted",
+        "holdout_wr_at_100": 48,
+        "holdout_average_precision": 0.53,
+        "holdout_recall_at_fpr_0p005": 0.63,
+        "overfit_risk_score": 2.0,
+    },
+    {
+        "result_id": "r_smote",
+        "dataset_variant": "relaxed_photometry",
+        "feature_set": "colors_parallax_error",
+        "includes_parallax_error": True,
+        "model": "xgboost",
+        "sampler": "smote",
+        "negative_ratio_label": "10x",
+        "selection_status": "accepted",
+        "holdout_wr_at_100": 43,
+        "holdout_average_precision": 0.57,
+        "holdout_recall_at_fpr_0p005": 0.60,
+        "overfit_risk_score": 1.0,
+    },
+])
+active_model_control(results, widget_key="test_picker")
+"""
+    app = AppTest.from_string(source, default_timeout=20)
+    app.session_state["selected_model_result_id"] = "r_none"
+    app.run()
+
+    configuration = next(
+        widget for widget in app.selectbox if widget.label == "Configuration"
+    )
+    configuration.select("r_smote").run()
+    assert app.session_state["selected_model_result_id"] == "r_none"
+
+    apply_button = next(button for button in app.button if button.label == "Use as active model")
+    apply_button.click().run()
+    assert app.session_state["selected_model_result_id"] == "r_smote"
+    assert not app.exception
 
 
 def _write_history_db(tmp_path: Path, *, include_predictions: bool = True) -> Path:
@@ -139,6 +376,35 @@ def _write_history_db(tmp_path: Path, *, include_predictions: bool = True) -> Pa
     return config_path
 
 
+def _selection_row(
+    result_id: str,
+    *,
+    wr_holdout: int,
+    wr_at_100: int,
+) -> dict[str, object]:
+    return {
+        "run_id": "run_relative",
+        "result_id": result_id,
+        "dataset_variant": "strict_photometry",
+        "feature_set": "colors_parallax",
+        "model": "xgboost",
+        "sampler": "none",
+        "negative_ratio_label": "10x",
+        "selection_status": "accepted",
+        "n_train": 500,
+        "wr_train": 50,
+        "n_holdout": 200,
+        "wr_holdout": wr_holdout,
+        "holdout_wr_at_50": min(wr_at_100, 30),
+        "holdout_wr_at_100": wr_at_100,
+        "holdout_average_precision": 0.5,
+        "holdout_precision_wr": 0.6,
+        "holdout_recall_wr": 0.5,
+        "holdout_fp": 2,
+        "bayes_best_params": "{}",
+    }
+
+
 def _result_row(result_id: str, variant: str, feature_set: str, model: str, status: str, wr_at_100: int, ap: float) -> dict[str, object]:
     return {
         "run_id": "run_a",
@@ -149,6 +415,9 @@ def _result_row(result_id: str, variant: str, feature_set: str, model: str, stat
         "sampler": "smote",
         "negative_ratio_label": "10x",
         "selection_status": status,
+        "n_train": 200,
+        "wr_train": 20,
+        "n_holdout": 100,
         "wr_holdout": 20,
         "holdout_wr_at_10": min(wr_at_100, 10),
         "holdout_wr_at_50": min(wr_at_100, 12),

@@ -23,6 +23,43 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def deep_merge_config(
+    base: dict[str, Any],
+    override: dict[str, Any],
+) -> dict[str, Any]:
+    """Recursively merge mappings while replacing scalar and list values."""
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = deep_merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_yaml_with_extends(
+    path: str | Path,
+    *,
+    _seen: set[Path] | None = None,
+) -> dict[str, Any]:
+    """Load a project YAML config with optional recursive `extends` support."""
+    resolved = resolve_path(path).resolve()
+    seen = set(_seen or set())
+    if resolved in seen:
+        raise ValueError(f"Configuration inheritance cycle detected at {resolved}")
+    seen.add(resolved)
+    config = load_yaml(resolved)
+    parent = config.pop("extends", None)
+    if not parent:
+        return config
+    base = load_yaml_with_extends(parent, _seen=seen)
+    return deep_merge_config(base, config)
+
+
 def load_reference_config(path: str | Path) -> dict[str, Any]:
     config_path = resolve_path(path)
     config = load_yaml(config_path)

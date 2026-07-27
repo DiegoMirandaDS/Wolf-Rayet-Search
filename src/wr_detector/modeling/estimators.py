@@ -28,7 +28,17 @@ def build_model_pipeline(
     sampler = build_sampler(sampler_config or model_config.get("sampler", "none"), random_state=random_state)
     if sampler is not None:
         steps.append(("sampler", sampler))
-    steps.append(("estimator", _make_estimator(estimator_name, random_state=random_state, positive_weight=positive_weight)))
+    steps.append(
+        (
+            "estimator",
+            _make_estimator(
+                estimator_name,
+                random_state=random_state,
+                positive_weight=positive_weight,
+                use_class_weight=sampler is None,
+            ),
+        )
+    )
     return Pipeline(steps)
 
 
@@ -56,10 +66,16 @@ def build_sampler(config: Mapping[str, object] | str | None, *, random_state: in
     raise ValueError(f"Unsupported sampler: {name}")
 
 
-def _make_estimator(name: str, *, random_state: int, positive_weight: float):
+def _make_estimator(
+    name: str,
+    *,
+    random_state: int,
+    positive_weight: float,
+    use_class_weight: bool,
+):
     if name == "logistic_regression":
         return LogisticRegression(
-            class_weight="balanced",
+            class_weight="balanced" if use_class_weight else None,
             max_iter=2000,
             solver="lbfgs",
             random_state=random_state,
@@ -70,7 +86,7 @@ def _make_estimator(name: str, *, random_state: int, positive_weight: float):
             max_depth=8,
             min_samples_leaf=5,
             max_features="sqrt",
-            class_weight="balanced_subsample",
+            class_weight="balanced_subsample" if use_class_weight else None,
             n_jobs=-1,
             random_state=random_state,
         )
@@ -84,7 +100,11 @@ def _make_estimator(name: str, *, random_state: int, positive_weight: float):
             early_stopping=True,
             validation_fraction=0.15,
             n_iter_no_change=20,
-            class_weight={0: 1.0, 1: float(positive_weight)},
+            class_weight=(
+                {0: 1.0, 1: float(positive_weight)}
+                if use_class_weight
+                else None
+            ),
             random_state=random_state,
         )
     if name == "xgboost":
@@ -103,7 +123,9 @@ def _make_estimator(name: str, *, random_state: int, positive_weight: float):
             colsample_bytree=0.8,
             reg_lambda=2.0,
             reg_alpha=0.0,
-            scale_pos_weight=float(positive_weight),
+            scale_pos_weight=(
+                float(positive_weight) if use_class_weight else 1.0
+            ),
             n_jobs=-1,
             random_state=random_state,
         )

@@ -1,0 +1,37 @@
+extends: configs/prediction_pool_exact_union.yaml
+
+build:
+  pool_build_id: pool_exact_union_smoke_v1
+  status: smoke_test_only
+  full_build_enabled: false
+
+output_db: data/databases/prediction_pool_exact_union_smoke_v1.duckdb
+staging_dir: data/raw/prediction_pool_exact_union_smoke_v1
+output_dir: data/processed/prediction_pool_exact_union_smoke_v1/acquisition
+manifest_dir: data/processed/prediction_pool_exact_union_smoke_v1/manifests
+
+gaia:
+  continue_on_tile_error: false
+
+safety:
+  max_local_bytes: 10000000000
+  max_workers: 3
+
+tiling:
+  # Three audited boxes with deliberately different source densities.
+  explicit_tiles:
+    - tile_id: smoke_inner_plane_l30
+      ra_min: 280.836066
+      ra_max: 281.336066
+      dec_min: -2.864234
+      dec_max: -2.364234
+    - tile_id: smoke_outer_plane_l150
+      ra_min: 60.707141
+      ra_max: 61.526994
+      dec_min: 52.170186
+      dec_max: 52.670186
+    - tile_id: smoke_high_latitude_l180_b30
+      ra_min: 119.456980
+      ra_max: 121.424230
+      dec_min: 39.566198
+      dec_max: 41.066198

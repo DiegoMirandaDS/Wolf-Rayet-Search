@@ -22,7 +22,7 @@ def render() -> None:
 
     top = st.columns([2.4, 1.2, 1])
     with top[0]:
-        selected_model = ui.select_model(results)
+        selected_model = ui.active_model_control(results, widget_key="stats_active_model")
     with top[1]:
         split = st.selectbox("Split", options=list(SPLIT_LABELS), format_func=SPLIT_LABELS.get)
     with top[2]:

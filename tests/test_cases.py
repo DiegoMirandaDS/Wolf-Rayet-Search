@@ -7,7 +7,9 @@ import pandas as pd
 import pytest
 
 from wr_detector.modeling.cases import (
+    add_case_spatial_coordinates,
     case_confusion,
+    classify_cases,
     false_positive_composition,
     load_case_overlap,
     load_case_predictions,
@@ -75,6 +77,58 @@ def test_case_aggregations(tmp_path):
     assert confusion["false_negative"] == 1
     assert confusion["false_positive"] == 1
     assert confusion["true_negative"] == 1
+
+
+def test_case_diagnostic_states_distinguish_budget_from_threshold():
+    cases = pd.DataFrame(
+        {
+            "rank": [1, 2, 3, 4],
+            "target": [1, 0, 1, 0],
+            "predicted": [1, 0, 0, 1],
+            "score": [0.9, 0.8, 0.4, 0.3],
+            "threshold": [0.5] * 4,
+        }
+    )
+
+    budget = classify_cases(cases, basis="review_budget", top_k=2)
+    threshold = classify_cases(cases, basis="operating_threshold", top_k=2)
+
+    assert budget["diagnostic_state"].tolist() == [
+        "WR recovered @K",
+        "Contaminant @K",
+        "WR outside @K",
+        "Background",
+    ]
+    assert threshold["diagnostic_state"].tolist() == [
+        "True positive",
+        "True negative",
+        "False negative",
+        "False positive",
+    ]
+
+
+def test_case_spatial_coordinates_keep_sky_and_quality_gate_distance():
+    cases = pd.DataFrame(
+        {
+            "ra": [266.4051, 10.0, pd.NA],
+            "dec": [-28.936175, -60.0, pd.NA],
+            "parallax": [0.5, -0.2, 1.0],
+            "parallax_over_error": [3.0, 5.0, 10.0],
+        }
+    )
+
+    spatial = add_case_spatial_coordinates(
+        cases,
+        min_parallax_over_error=2.0,
+        max_distance_kpc=5.0,
+    )
+
+    assert spatial.loc[0, "galactic_l"] == pytest.approx(0.0, abs=0.01)
+    assert spatial.loc[0, "galactic_b"] == pytest.approx(0.0, abs=0.01)
+    assert spatial.loc[0, "distance_kpc"] == pytest.approx(2.0)
+    assert bool(spatial.loc[0, "distance_plotted"])
+    assert not bool(spatial.loc[1, "distance_plotted"])
+    assert pd.isna(spatial.loc[2, "galactic_l"])
 
 
 def test_case_overlap_across_models(tmp_path):

@@ -32,7 +32,9 @@ def load_modeling_dataset(config: dict, variant: str) -> pd.DataFrame:
     filters = load_yaml(config["filters_config"])
     paths = load_yaml(config["paths_config"])
     dataset_cfg = config.get("modeling_dataset", {})
-    reference_path, negative_path = _modeling_dataset_paths(filters, paths, variant, dataset_cfg)
+    reference_path, negative_path = modeling_dataset_paths(
+        filters, paths, variant, dataset_cfg
+    )
     reference = pd.read_parquet(reference_path).copy()
     negative = pd.read_parquet(negative_path).copy()
     if bool(dataset_cfg.get("require_color_locus_keep", False)):
@@ -45,7 +47,13 @@ def load_modeling_dataset(config: dict, variant: str) -> pd.DataFrame:
     return pd.concat([reference, negative], ignore_index=True, sort=False)
 
 
-def _modeling_dataset_paths(filters: dict, paths: dict, variant: str, dataset_cfg: dict) -> tuple[Path, Path]:
+def modeling_dataset_paths(
+    filters: dict,
+    paths: dict,
+    variant: str,
+    dataset_cfg: dict,
+) -> tuple[Path, Path]:
+    """Resolve the exact positive and negative artifacts used for a variant."""
     source = str(dataset_cfg.get("source", "base"))
     reference_dir = resolve_path(paths["processed_reference_dir"])
     simbad_dir = resolve_path(paths["processed_simbad_negative_dir"])

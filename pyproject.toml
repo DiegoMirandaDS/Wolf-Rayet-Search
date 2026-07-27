@@ -36,6 +36,16 @@ viz = [
   "streamlit>=1.57,<1.58",
   "altair>=5.0",
 ]
+report = [
+  "reportlab>=4.2",
+  "pdfplumber>=0.11",
+  "pypdf>=5.0",
+]
+notebooks = [
+  "nbformat>=5.10",
+  "nbclient>=0.10",
+  "ipykernel>=6.29",
+]
 
 [project.scripts]
 wr-detector = "wr_detector.cli:app"

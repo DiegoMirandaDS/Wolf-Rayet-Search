@@ -128,6 +128,9 @@ def compute_ranking_metrics(
         metrics[f"precision_at_{k}"] = float(tp / effective_k) if effective_k else 0.0
         metrics[f"recall_at_{k}"] = float(tp / positives) if positives else 0.0
         metrics[f"wr_at_{k}"] = tp
+        metrics[f"candidates_per_wr_at_{k}"] = (
+            float(effective_k / tp) if tp else float("nan")
+        )
     for fpr in fpr_levels:
         label = _fpr_label(fpr)
         allowed_fp = int(np.floor(float(fpr) * negatives))
