@@ -28,8 +28,9 @@ python -m wr_detector.reporting.project_summary --figures-only
 | ![Relaxed colour locus](reports/public/figures/color_locus_relaxed.png) | ![Model performance](reports/public/figures/model_performance.png) |
 
 The binary data required to browse the completed experiments is deliberately
-kept out of Git history. Reviewers can use the optional release bundle described
-in [`docs/reviewer_handoff.md`](docs/reviewer_handoff.md).
+kept out of Git history. Reviewers can download
+`wolf_rayet_search_review_bundle.zip` from the GitHub Release associated with
+this delivery and extract it in the repository root.
 
 The bundle contains the three DuckDB review databases and three representative
 first-stage models. Second-layer metrics remain visible in Model Explorer, but
@@ -264,11 +265,9 @@ broad acquisition envelope
 → score each model only on sources carrying its variant bit
 ```
 
-The bit contract, lineage requirements, resume behaviour and storage decision
-are specified in
-[`docs/prediction_pool_exact_union_design.md`](docs/prediction_pool_exact_union_design.md).
-The colors, margins and full-build safety gate are documented in
-[`docs/acquisition_envelope_v1.md`](docs/acquisition_envelope_v1.md).
+The production configuration versions the bit contract, locus lineage,
+acquisition envelope, resume behaviour and storage paths. Scoring checks these
+contracts before applying any selected model.
 The three-region Gaia smoke contains 9,099 unique acquisition rows, measures
 436.5 compressed bytes per row with the retained audit columns, and resumes by
 skipping all three validated tiles.
@@ -279,8 +278,7 @@ million rows and 62.6 GiB after retaining quality, cross-match, astrometric,
 variability and H-alpha audit fields. Only 249/347 finite relaxed WR controls
 have both Gaia 2MASS and AllWISE best-neighbour paths, while the reference
 dataset permits VizieR fallback; this is an explicit scope limitation, not an
-envelope loss. The evidence and the alternative 443-million-row design are in
-[`docs/prediction_pool_prebuild_verification_20260724.md`](docs/prediction_pool_prebuild_verification_20260724.md).
+envelope loss.
 
 The old configuration is intentionally blocked for mutation because it still
 uses `aggregated_mean_fit`. The new acquisition-first configuration is separate:
@@ -371,7 +369,6 @@ checksums, manifests and resume behavior.
 
 ```text
 configs/                    Versioned pipeline and model configuration
-docs/                       Scientific decisions, audits and pool design
 notebooks/                  EDA and audit notebooks; never source-of-truth logic
 src/wr_detector/
   catalogs/                 Gaia, GWRC, SIMBAD and VizieR access
@@ -382,7 +379,6 @@ src/wr_detector/
 tests/                      Unit and integration tests
 data/                       Local generated data; excluded from Git
 reports/                    Local run artefacts; excluded from Git
-legacy/                     Historical material kept for context
 ```
 
 DuckDB is the canonical store for experiment history and pool metadata.
