@@ -16,8 +16,9 @@ is still being built and is not part of this handoff.
 
 The bundle is a binary companion to the source repository. It includes:
 
-- `training_history.duckdb`, `wr_reference.duckdb` and
-  `simbad_negative.duckdb`;
+- `training_history.duckdb`, `wr_reference.duckdb` and an app-facing
+  `simbad_negative.duckdb` projection containing the identity,
+  classification, astrometry and photometry fields used by Model Explorer;
 - three representative first-stage models from `run_v3_main`;
 - compact CSV exports of the first- and second-layer result tables.
 
