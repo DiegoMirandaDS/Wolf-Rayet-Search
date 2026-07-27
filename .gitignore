@@ -7,6 +7,8 @@ __pycache__/
 tmp/
 .venv/
 venv/
+docs/
+.docs/
 Avances.md
 .env
 .idea/
