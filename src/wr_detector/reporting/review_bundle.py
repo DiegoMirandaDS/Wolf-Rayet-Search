@@ -55,6 +55,18 @@ COMPACT_NEGATIVE_TABLES = {
     "twomass_matches": ("source_id", "J", "H", "Ks", "tmass_quality"),
     "wise_matches": ("source_id", "W1", "W2", "wise_quality"),
 }
+FIRST_STAGE_HISTORY_TABLES = (
+    "training_runs",
+    "model_results",
+    "model_predictions",
+    "model_artifacts",
+    "model_metadata",
+    "feature_importance",
+)
+SECOND_LAYER_HISTORY_TABLES = (
+    "second_layer_results",
+    "second_layer_runs",
+)
 
 
 @dataclass(frozen=True)
@@ -220,6 +232,29 @@ def build_compact_negative_database(source: Path, output: Path) -> Path:
     return output
 
 
+def build_compact_training_history(source: Path, output: Path) -> Path:
+    """Keep the complete selected runs while omitting unrelated run history."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    source_sql = source.resolve().as_posix().replace("'", "''")
+    with duckdb.connect(str(output)) as con:
+        con.execute(f"ATTACH '{source_sql}' AS source_db (READ_ONLY)")
+        for table in FIRST_STAGE_HISTORY_TABLES:
+            con.execute(
+                f'CREATE TABLE "{table}" AS '
+                f'SELECT * FROM source_db."{table}" WHERE run_id = ?',
+                [DEFAULT_RUN_ID],
+            )
+        for table in SECOND_LAYER_HISTORY_TABLES:
+            con.execute(
+                f'CREATE TABLE "{table}" AS '
+                f'SELECT * FROM source_db."{table}" WHERE run_id = ?',
+                [DEFAULT_SECOND_LAYER_RUN_ID],
+            )
+        con.execute("CHECKPOINT")
+    return output
+
+
 def prepare_bundle_files(
     files: Iterable[BundleFile],
     *,
@@ -228,7 +263,19 @@ def prepare_bundle_files(
     """Replace bulky source databases with equivalent app-facing projections."""
     prepared = []
     for item in files:
-        if item.archive_path == "data/databases/simbad_negative.duckdb":
+        if item.archive_path == "data/databases/training_history.duckdb":
+            compact = build_compact_training_history(
+                item.source,
+                temporary_dir / "training_history.duckdb",
+            )
+            prepared.append(
+                BundleFile(
+                    source=compact,
+                    archive_path=item.archive_path,
+                    role="selected_runs_training_history",
+                )
+            )
+        elif item.archive_path == "data/databases/simbad_negative.duckdb":
             compact = build_compact_negative_database(
                 item.source,
                 temporary_dir / "simbad_negative.duckdb",
@@ -254,7 +301,11 @@ repository root, preserving paths.
 
 It contains:
 
-- the DuckDB experiment and WR reference databases used by Model Explorer;
+- the complete metrics, predictions and feature importances for all 144
+  configurations in `{manifest["first_stage_run_id"]}`;
+- the summarized second-layer audit from
+  `{manifest["second_layer_run_id"]}`;
+- the WR reference database used by Model Explorer;
 - an app-facing projection of the SIMBAD database with the identity,
   classification, astrometry and photometry columns used in case review;
 - three representative first-stage models from `{manifest["first_stage_run_id"]}`;
@@ -262,10 +313,10 @@ It contains:
 
 It does not contain the prediction pool, every first-stage model, second-layer
 model binaries, or the reduced datasets used to fit the second layer. The
-training-history database exposes metrics and predictions for all 144
-first-stage configurations and the summarized second-layer audit. Validation
-Layers remains available in Model Explorer; Candidate Stack requires the
-omitted second-layer artifacts and is outside this review bundle.
+training-history database is restricted to the two runs named above; unrelated
+historical runs are omitted. Validation Layers remains available in Model
+Explorer; Candidate Stack requires the omitted second-layer artifacts and is
+outside this review bundle.
 
 Uncompressed payload: {size_mb:.1f} MiB.
 

@@ -12,6 +12,7 @@ from wr_detector.reporting.review_bundle import (
     BundleFile,
     _bundle_readme,
     build_compact_negative_database,
+    build_compact_training_history,
     build_manifest,
     sha256_file,
     verify_review_bundle,
@@ -58,6 +59,7 @@ def test_review_bundle_readme_uses_minimal_safe_review_install() -> None:
     assert "second-layer model binaries" in " ".join(readme.split())
     assert "official GitHub Release" in readme
     assert "app-facing projection of the SIMBAD database" in " ".join(readme.split())
+    assert "unrelated historical runs are omitted" in " ".join(readme.split())
 
 
 def test_compact_negative_database_keeps_case_review_contract(
@@ -114,6 +116,45 @@ def test_compact_negative_database_keeps_case_review_contract(
         assert "unused_measurement" not in {
             row[0] for row in con.execute("DESCRIBE gaia_sources").fetchall()
         }
+
+
+def test_compact_training_history_keeps_selected_runs(tmp_path: Path) -> None:
+    source = tmp_path / "history.duckdb"
+    output = tmp_path / "compact_history.duckdb"
+    first_stage_tables = (
+        "training_runs",
+        "model_results",
+        "model_predictions",
+        "model_artifacts",
+        "model_metadata",
+        "feature_importance",
+    )
+    second_layer_tables = ("second_layer_results", "second_layer_runs")
+    with duckdb.connect(str(source)) as con:
+        for table in first_stage_tables:
+            con.execute(f'CREATE TABLE "{table}" (run_id VARCHAR, value INTEGER)')
+            con.execute(
+                f'INSERT INTO "{table}" VALUES '
+                "('run_v3_main', 1), ('older_run', 2)"
+            )
+        for table in second_layer_tables:
+            con.execute(f'CREATE TABLE "{table}" (run_id VARCHAR, value INTEGER)')
+            con.execute(
+                f'INSERT INTO "{table}" VALUES '
+                "('run_v3_second_layer', 1), ('older_layer', 2)"
+            )
+
+    build_compact_training_history(source, output)
+
+    with duckdb.connect(str(output), read_only=True) as con:
+        for table in first_stage_tables:
+            assert con.execute(
+                f'SELECT run_id FROM "{table}"'
+            ).fetchall() == [("run_v3_main",)]
+        for table in second_layer_tables:
+            assert con.execute(
+                f'SELECT run_id FROM "{table}"'
+            ).fetchall() == [("run_v3_second_layer",)]
 
 
 def test_verify_review_bundle_rejects_unsafe_paths(tmp_path: Path) -> None:
