@@ -5,11 +5,14 @@ import json
 from pathlib import Path
 import zipfile
 
+import duckdb
 import pytest
 
 from wr_detector.reporting.review_bundle import (
     BundleFile,
     _bundle_readme,
+    build_compact_negative_database,
+    build_compact_training_history,
     build_manifest,
     sha256_file,
     verify_review_bundle,
@@ -55,6 +58,103 @@ def test_review_bundle_readme_uses_minimal_safe_review_install() -> None:
     assert "--run-id" not in readme
     assert "second-layer model binaries" in " ".join(readme.split())
     assert "official GitHub Release" in readme
+    assert "app-facing projection of the SIMBAD database" in " ".join(readme.split())
+    assert "unrelated historical runs are omitted" in " ".join(readme.split())
+
+
+def test_compact_negative_database_keeps_case_review_contract(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.duckdb"
+    output = tmp_path / "compact.duckdb"
+    with duckdb.connect(str(source)) as con:
+        con.execute(
+            """
+            CREATE TABLE simbad_negative_sources AS
+            SELECT 1::BIGINT AS source_id, 'A' AS simbad_main_id,
+                   'Star' AS simbad_main_type, 'O' AS simbad_sp_type,
+                   'unused' AS simbad_ids
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE gaia_sources AS
+            SELECT 1::BIGINT AS source_id, 10.0 AS ra, -20.0 AS dec,
+                   12.0 AS G, 13.0 AS BP, 11.0 AS RP, 0.2 AS parallax,
+                   2.0 AS parallax_over_error, 1.1 AS ruwe,
+                   999.0 AS unused_measurement
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE twomass_matches AS
+            SELECT 1::BIGINT AS source_id, 10.0 AS J, 9.5 AS H, 9.0 AS Ks,
+                   'AAA' AS tmass_quality, 'unused' AS match_method
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE wise_matches AS
+            SELECT 1::BIGINT AS source_id, 8.5 AS W1, 8.0 AS W2,
+                   'AA' AS wise_quality, 'unused' AS match_method
+            """
+        )
+
+    build_compact_negative_database(source, output)
+
+    with duckdb.connect(str(output), read_only=True) as con:
+        assert {row[0] for row in con.execute("SHOW TABLES").fetchall()} == {
+            "simbad_negative_sources",
+            "gaia_sources",
+            "twomass_matches",
+            "wise_matches",
+        }
+        assert con.execute(
+            "SELECT simbad_main_id, simbad_main_type, simbad_sp_type "
+            "FROM simbad_negative_sources"
+        ).fetchone() == ("A", "Star", "O")
+        assert "unused_measurement" not in {
+            row[0] for row in con.execute("DESCRIBE gaia_sources").fetchall()
+        }
+
+
+def test_compact_training_history_keeps_selected_runs(tmp_path: Path) -> None:
+    source = tmp_path / "history.duckdb"
+    output = tmp_path / "compact_history.duckdb"
+    first_stage_tables = (
+        "training_runs",
+        "model_results",
+        "model_predictions",
+        "model_artifacts",
+        "model_metadata",
+        "feature_importance",
+    )
+    second_layer_tables = ("second_layer_results", "second_layer_runs")
+    with duckdb.connect(str(source)) as con:
+        for table in first_stage_tables:
+            con.execute(f'CREATE TABLE "{table}" (run_id VARCHAR, value INTEGER)')
+            con.execute(
+                f'INSERT INTO "{table}" VALUES '
+                "('run_v3_main', 1), ('older_run', 2)"
+            )
+        for table in second_layer_tables:
+            con.execute(f'CREATE TABLE "{table}" (run_id VARCHAR, value INTEGER)')
+            con.execute(
+                f'INSERT INTO "{table}" VALUES '
+                "('run_v3_second_layer', 1), ('older_layer', 2)"
+            )
+
+    build_compact_training_history(source, output)
+
+    with duckdb.connect(str(output), read_only=True) as con:
+        for table in first_stage_tables:
+            assert con.execute(
+                f'SELECT run_id FROM "{table}"'
+            ).fetchall() == [("run_v3_main",)]
+        for table in second_layer_tables:
+            assert con.execute(
+                f'SELECT run_id FROM "{table}"'
+            ).fetchall() == [("run_v3_second_layer",)]
 
 
 def test_verify_review_bundle_rejects_unsafe_paths(tmp_path: Path) -> None:

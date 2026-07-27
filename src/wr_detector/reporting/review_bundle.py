@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +33,39 @@ SELECTED_RESULT_IDS = (
     "9e08cb4f7517ab76d5b152e7a7dc53e02c826321",
     "49957d2295543512d384313f5c352a619fac7be8",
     "2efb4b2059dac012e52b9ff3f11e17fe4995dc66",
+)
+COMPACT_NEGATIVE_TABLES = {
+    "simbad_negative_sources": (
+        "source_id",
+        "simbad_main_id",
+        "simbad_main_type",
+        "simbad_sp_type",
+    ),
+    "gaia_sources": (
+        "source_id",
+        "ra",
+        "dec",
+        "G",
+        "BP",
+        "RP",
+        "parallax",
+        "parallax_over_error",
+        "ruwe",
+    ),
+    "twomass_matches": ("source_id", "J", "H", "Ks", "tmass_quality"),
+    "wise_matches": ("source_id", "W1", "W2", "wise_quality"),
+}
+FIRST_STAGE_HISTORY_TABLES = (
+    "training_runs",
+    "model_results",
+    "model_predictions",
+    "model_artifacts",
+    "model_metadata",
+    "feature_importance",
+)
+SECOND_LAYER_HISTORY_TABLES = (
+    "second_layer_results",
+    "second_layer_runs",
 )
 
 
@@ -181,6 +215,83 @@ def build_manifest(files: Iterable[BundleFile]) -> dict:
     }
 
 
+def build_compact_negative_database(source: Path, output: Path) -> Path:
+    """Write the app-facing subset of the SIMBAD database used by case review."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    source_sql = source.resolve().as_posix().replace("'", "''")
+    with duckdb.connect(str(output)) as con:
+        con.execute(f"ATTACH '{source_sql}' AS source_db (READ_ONLY)")
+        for table, columns in COMPACT_NEGATIVE_TABLES.items():
+            selected = ", ".join(f'"{column}"' for column in columns)
+            con.execute(
+                f'CREATE TABLE "{table}" AS '
+                f'SELECT {selected} FROM source_db."{table}"'
+            )
+        con.execute("CHECKPOINT")
+    return output
+
+
+def build_compact_training_history(source: Path, output: Path) -> Path:
+    """Keep the complete selected runs while omitting unrelated run history."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    source_sql = source.resolve().as_posix().replace("'", "''")
+    with duckdb.connect(str(output)) as con:
+        con.execute(f"ATTACH '{source_sql}' AS source_db (READ_ONLY)")
+        for table in FIRST_STAGE_HISTORY_TABLES:
+            con.execute(
+                f'CREATE TABLE "{table}" AS '
+                f'SELECT * FROM source_db."{table}" WHERE run_id = ?',
+                [DEFAULT_RUN_ID],
+            )
+        for table in SECOND_LAYER_HISTORY_TABLES:
+            con.execute(
+                f'CREATE TABLE "{table}" AS '
+                f'SELECT * FROM source_db."{table}" WHERE run_id = ?',
+                [DEFAULT_SECOND_LAYER_RUN_ID],
+            )
+        con.execute("CHECKPOINT")
+    return output
+
+
+def prepare_bundle_files(
+    files: Iterable[BundleFile],
+    *,
+    temporary_dir: Path,
+) -> list[BundleFile]:
+    """Replace bulky source databases with equivalent app-facing projections."""
+    prepared = []
+    for item in files:
+        if item.archive_path == "data/databases/training_history.duckdb":
+            compact = build_compact_training_history(
+                item.source,
+                temporary_dir / "training_history.duckdb",
+            )
+            prepared.append(
+                BundleFile(
+                    source=compact,
+                    archive_path=item.archive_path,
+                    role="selected_runs_training_history",
+                )
+            )
+        elif item.archive_path == "data/databases/simbad_negative.duckdb":
+            compact = build_compact_negative_database(
+                item.source,
+                temporary_dir / "simbad_negative.duckdb",
+            )
+            prepared.append(
+                BundleFile(
+                    source=compact,
+                    archive_path=item.archive_path,
+                    role="model_explorer_database_compact",
+                )
+            )
+        else:
+            prepared.append(item)
+    return prepared
+
+
 def _bundle_readme(manifest: dict) -> str:
     size_mb = manifest["uncompressed_bytes"] / (1024**2)
     return f"""# Wolf-Rayet Search - review artifact bundle
@@ -190,16 +301,22 @@ repository root, preserving paths.
 
 It contains:
 
-- the DuckDB experiment/reference databases used by Model Explorer;
+- the complete metrics, predictions and feature importances for all 144
+  configurations in `{manifest["first_stage_run_id"]}`;
+- the summarized second-layer audit from
+  `{manifest["second_layer_run_id"]}`;
+- the WR reference database used by Model Explorer;
+- an app-facing projection of the SIMBAD database with the identity,
+  classification, astrometry and photometry columns used in case review;
 - three representative first-stage models from `{manifest["first_stage_run_id"]}`;
 - compact CSV exports of the first- and second-layer result tables.
 
 It does not contain the prediction pool, every first-stage model, second-layer
 model binaries, or the reduced datasets used to fit the second layer. The
-training-history database exposes metrics and predictions for all 144
-first-stage configurations and the summarized second-layer audit. Validation
-Layers remains available in Model Explorer; Candidate Stack requires the
-omitted second-layer artifacts and is outside this review bundle.
+training-history database is restricted to the two runs named above; unrelated
+historical runs are omitted. Validation Layers remains available in Model
+Explorer; Candidate Stack requires the omitted second-layer artifacts and is
+outside this review bundle.
 
 Uncompressed payload: {size_mb:.1f} MiB.
 
@@ -280,24 +397,28 @@ def build_review_bundle(
     *,
     compression_level: int = 6,
 ) -> tuple[Path, dict]:
-    files = collect_bundle_files()
-    manifest = build_manifest(files)
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(
-        output,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=compression_level,
-        allowZip64=True,
-    ) as archive:
-        for item in files:
-            archive.write(item.source, item.archive_path)
-        archive.writestr(
-            "REVIEW_BUNDLE_MANIFEST.json",
-            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+    with tempfile.TemporaryDirectory(prefix="wr_review_bundle_") as temp:
+        files = prepare_bundle_files(
+            collect_bundle_files(),
+            temporary_dir=Path(temp),
         )
-        archive.writestr("README_REVIEW_BUNDLE.md", _bundle_readme(manifest))
+        manifest = build_manifest(files)
+        with zipfile.ZipFile(
+            output,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=compression_level,
+            allowZip64=True,
+        ) as archive:
+            for item in files:
+                archive.write(item.source, item.archive_path)
+            archive.writestr(
+                "REVIEW_BUNDLE_MANIFEST.json",
+                json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            )
+            archive.writestr("README_REVIEW_BUNDLE.md", _bundle_readme(manifest))
     verify_review_bundle(output)
     return output, manifest
 
@@ -312,8 +433,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.dry_run:
-        files = collect_bundle_files()
-        manifest = build_manifest(files)
+        with tempfile.TemporaryDirectory(prefix="wr_review_bundle_") as temp:
+            files = prepare_bundle_files(
+                collect_bundle_files(),
+                temporary_dir=Path(temp),
+            )
+            manifest = build_manifest(files)
         print(json.dumps(manifest, indent=2, ensure_ascii=False))
         return
     output, manifest = build_review_bundle(args.output)
