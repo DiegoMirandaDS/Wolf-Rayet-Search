@@ -8,7 +8,11 @@ construction, a physically constrained colour-locus, rare-object model
 selection and a Gaia-scale prediction pool. The output is a ranked list for
 astronomical follow-up, not an automatic claim that a source is a new WR star.
 
-![Wolf-Rayet Search pipeline](reports/public/figures/pipeline_overview.png)
+This research project began in 2024 and is being developed toward a scientific
+manuscript. The ranked candidate set has been shared with collaborating
+astronomers for archival-spectrum searches and spectral assessment. Until that
+review is complete, every listed source remains a candidate rather than a
+confirmed Wolf-Rayet star.
 
 ## Technical handoff
 
