@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,14 @@ from wr_detector.modeling import (
     train_models,
 )
 from wr_detector.pipelines.prediction_pool import audit_prediction_pool, build_prediction_pool
+from wr_detector.pipelines.prediction_pool_candidates import (
+    audit_prediction_pool_candidates,
+    build_prediction_pool_candidates,
+)
+from wr_detector.pipelines.prediction_pool_delivery import (
+    audit_prediction_pool_delivery,
+    build_prediction_pool_delivery,
+)
 from wr_detector.pipelines.prediction_pool_exact_union import (
     audit_exact_union_prediction_pool,
     build_exact_union_prediction_pool,
@@ -71,7 +80,12 @@ def explorer_theme_options(theme: str) -> list[str]:
     return options
 
 
-def streamlit_model_explorer_command(config: Path, port: int, theme: str = DEFAULT_EXPLORER_THEME) -> list[str]:
+def streamlit_model_explorer_command(
+    config: Path,
+    port: int,
+    theme: str = DEFAULT_EXPLORER_THEME,
+    candidate_config: Path = Path("configs/prediction_pool_candidates.yaml"),
+) -> list[str]:
     app_path = Path(__file__).resolve().parent / "apps" / "model_explorer.py"
     return [
         sys.executable,
@@ -95,6 +109,8 @@ def streamlit_model_explorer_command(config: Path, port: int, theme: str = DEFAU
         "--",
         "--config",
         str(config),
+        "--candidate-config",
+        str(candidate_config),
     ]
 
 
@@ -247,8 +263,21 @@ def audit_prediction_pool_exact_union_build_command(
     config: Path = typer.Option(
         Path("configs/prediction_pool_exact_union.yaml"), "--config", "-c"
     ),
+    output_json: Path | None = typer.Option(
+        None,
+        "--output-json",
+        help="Persist the complete machine-readable audit result.",
+    ),
 ) -> None:
     result = audit_exact_union_prediction_pool(config)
+    if output_json is not None:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output_json.with_suffix(output_json.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(result, indent=2, default=str),
+            encoding="utf-8",
+        )
+        temporary.replace(output_json)
     typer.echo("Exact-union prediction-pool build audit")
     typer.echo(f"status: {result['status']}")
     typer.echo(f"pool_build_id: {result['pool_build_id']}")
@@ -352,6 +381,83 @@ def audit_prediction_pool_scoring_command(
             typer.echo(f"  - {error}")
         raise typer.Exit(code=1)
     typer.echo(f"ok: {result['ok']}")
+
+
+@app.command("build-prediction-pool-candidates")
+def build_prediction_pool_candidates_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_candidates.yaml"), "--config", "-c"
+    ),
+    refresh_simbad: bool = typer.Option(
+        False,
+        "--refresh-simbad",
+        help="Replace the persisted live SIMBAD snapshot.",
+    ),
+    skip_simbad: bool = typer.Option(
+        False,
+        "--skip-simbad",
+        help="Build rankings without network enrichment.",
+    ),
+) -> None:
+    result = build_prediction_pool_candidates(
+        config,
+        refresh_simbad=refresh_simbad,
+        skip_simbad=skip_simbad,
+    )
+    typer.echo("Prediction-pool candidate review completed.")
+    typer.echo(f"review_run_id: {result['review_run_id']}")
+    typer.echo(f"database_path: {result['database_path']}")
+    typer.echo(f"manifest_path: {result['manifest_path']}")
+    typer.echo(f"counts: {result['counts']}")
+
+
+@app.command("audit-prediction-pool-candidates")
+def audit_prediction_pool_candidates_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_candidates.yaml"), "--config", "-c"
+    ),
+    review_run_id: str | None = typer.Option(
+        None, "--review-run-id"
+    ),
+) -> None:
+    result = audit_prediction_pool_candidates(
+        config,
+        review_run_id=review_run_id,
+    )
+    typer.echo("Prediction-pool candidate review audit")
+    for key, value in result.items():
+        typer.echo(f"{key}: {value}")
+    if not result["ok"]:
+        raise typer.Exit(code=1)
+
+
+@app.command("build-prediction-pool-delivery")
+def build_prediction_pool_delivery_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_candidates.yaml"), "--config", "-c"
+    ),
+) -> None:
+    result = build_prediction_pool_delivery(config)
+    typer.echo("Prediction-pool stakeholder delivery completed.")
+    typer.echo(f"directory: {result['delivery_directory']}")
+    typer.echo(f"archive: {result['archive_path']}")
+    typer.echo(f"prediction_rows: {result['prediction_rows']}")
+    typer.echo(f"top_rows: {result['top_rows']}")
+    typer.echo(f"pool_bytes: {result['pool_bytes']}")
+
+
+@app.command("audit-prediction-pool-delivery")
+def audit_prediction_pool_delivery_command(
+    config: Path = typer.Option(
+        Path("configs/prediction_pool_candidates.yaml"), "--config", "-c"
+    ),
+) -> None:
+    result = audit_prediction_pool_delivery(config)
+    typer.echo("Prediction-pool delivery audit")
+    for key, value in result.items():
+        typer.echo(f"{key}: {value}")
+    if not result["ok"]:
+        raise typer.Exit(code=1)
 
 
 @app.command("pilot-prediction-pool-locus")
@@ -461,6 +567,11 @@ def train_models_command(
 @app.command("explore-models")
 def explore_models_command(
     config: Path = typer.Option(Path("configs/models.yaml"), "--config", "-c"),
+    candidate_config: Path = typer.Option(
+        Path("configs/prediction_pool_candidates.yaml"),
+        "--candidate-config",
+        help="Prediction-pool candidate review configuration.",
+    ),
     port: int = typer.Option(8501, "--port", help="Local Streamlit server port."),
     theme: str = typer.Option(
         DEFAULT_EXPLORER_THEME,
@@ -473,7 +584,15 @@ def explore_models_command(
     if theme not in EXPLORER_THEMES:
         raise typer.BadParameter(f"Unknown theme: {theme}. Available: {', '.join(EXPLORER_THEMES)}")
     typer.echo(f"Starting Model Explorer at http://localhost:{port} (theme: {theme})")
-    subprocess.run(streamlit_model_explorer_command(config, port, theme), check=True)
+    subprocess.run(
+        streamlit_model_explorer_command(
+            config,
+            port,
+            theme,
+            candidate_config,
+        ),
+        check=True,
+    )
 
 
 @app.command("train-second-layer")

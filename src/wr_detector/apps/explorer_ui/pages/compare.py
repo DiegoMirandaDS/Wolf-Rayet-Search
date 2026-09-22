@@ -52,19 +52,21 @@ def render() -> None:
         "recall is used when holdout WR totals differ."
     )
 
-    compared = _ranking_table(ranked, metric)
-    if compared.empty:
+    selected_models = _ranking_table(ranked, metric)
+    if selected_models.empty:
         st.info("Check one or more rows in the table to populate the comparison charts.")
         return
-    if len(compared) > MAX_COMPARED_MODELS:
+    _active_selection_controls(selected_models)
+
+    compared = selected_models
+    if len(selected_models) > MAX_COMPARED_MODELS:
         st.warning(
-            f"{len(compared)} rows are checked. Charts use the first "
+            f"{len(selected_models)} rows are checked. Charts use the first "
             f"{MAX_COMPARED_MODELS} checked models to remain legible."
         )
-        compared = compared.head(MAX_COMPARED_MODELS)
+        compared = selected_models.head(MAX_COMPARED_MODELS).copy()
     compared["chart_label"] = compared.apply(ui.chart_label, axis=1)
 
-    _active_from_compared(compared)
     with st.expander("How to read the comparison", expanded=False):
         st.markdown(
             """
@@ -184,33 +186,30 @@ def _ranking_table(ranked: pd.DataFrame, metric: str) -> pd.DataFrame:
         column_config=column_config,
         on_select="rerun",
         selection_mode="multi-row",
-        key="compare_ranking_table",
+        key=(
+            "compare_ranking_table_"
+            f"{int(st.session_state.get(ui.COMPARE_SELECTION_VERSION_KEY, 0))}"
+        ),
     )
     selected_rows = event.selection.rows if event.selection else []
-    valid_rows = [index for index in selected_rows if 0 <= index < len(ranked)]
+    valid_rows = sorted(
+        {index for index in selected_rows if 0 <= index < len(ranked)}
+    )
     return ranked.iloc[valid_rows].copy()
 
 
-def _active_from_compared(compared: pd.DataFrame) -> None:
-    """Offer an explicit promotion without coupling row checks to active state."""
-    options = compared["result_id"].astype(str).tolist()
-    labels = {
-        str(row.result_id): str(row.short_label)
-        for row in compared.itertuples(index=False)
-    }
-    control, action = st.columns([4, 1])
-    chosen = control.selectbox(
-        "Active model from checked rows",
-        options=options,
-        format_func=lambda value: labels.get(value, value),
-        key="compare_active_from_checked",
-        label_visibility="collapsed",
-    )
+def _active_selection_controls(compared: pd.DataFrame) -> None:
+    """Promote checked rows as an explicitly ordered cross-page selection."""
+    action, context = st.columns([1.35, 3.65], vertical_alignment="center")
     if action.button(
-        "Set active",
-        key="compare_set_active",
+        "Make selected models active",
+        key="compare_activate_selection",
+        type="primary",
         width="stretch",
     ):
-        st.session_state[ui.SELECTED_MODEL_KEY] = chosen
+        ui.activate_model_selection(compared["result_id"].astype(str).tolist())
         st.rerun()
-    st.caption(f"{len(compared)} checked · checks control charts only")
+    context.caption(
+        f"{len(compared)} checked · activation preserves the visible ranking order. "
+        "Until activated, checks control comparison charts only."
+    )

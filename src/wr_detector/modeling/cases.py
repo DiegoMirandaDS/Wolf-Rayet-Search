@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
+from sklearn.metrics import precision_recall_curve, roc_curve
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 
@@ -208,62 +209,71 @@ def false_positive_composition(cases: pd.DataFrame, *, top_k: int = 100) -> pd.D
 
 
 def precision_recall_points(cases: pd.DataFrame, *, max_points: int = 400) -> pd.DataFrame:
-    """Precision-recall curve points computed from per-source scores.
-
-    Returns one row per retained rank with ``recall``, ``precision`` and the
-    ``score`` cutoff, downsampled evenly to ``max_points`` rows.
-    """
-    ranked = _ranked_targets(cases)
-    if ranked.empty:
+    """Canonical threshold-based precision-recall curve from source scores."""
+    scored = cases.dropna(subset=["score", "target"])
+    if scored.empty or scored["target"].nunique() < 2:
         return pd.DataFrame(columns=["recall", "precision", "score"])
-    positives = int(ranked["target"].sum())
-    if positives == 0:
-        return pd.DataFrame(columns=["recall", "precision", "score"])
-    cumulative_tp = ranked["target"].cumsum()
-    counts = pd.Series(range(1, len(ranked) + 1), index=ranked.index)
+    precision, recall, thresholds = precision_recall_curve(
+        scored["target"].astype(int), scored["score"].astype(float)
+    )
+    # sklearn emits decreasing recall. Reverse it for a conventional left-to-right
+    # plot and align each point with the threshold that produces it.
     curve = pd.DataFrame(
         {
-            "recall": cumulative_tp / positives,
-            "precision": cumulative_tp / counts,
-            "score": ranked["score"],
+            "recall": recall[::-1],
+            "precision": precision[::-1],
+            "score": np.r_[np.nan, thresholds[::-1]],
         }
     )
     return _downsample(curve, max_points)
 
 
 def roc_points(cases: pd.DataFrame, *, max_points: int = 400) -> pd.DataFrame:
-    """ROC curve points (``fpr``, ``tpr``, ``score``) from per-source scores."""
-    ranked = _ranked_targets(cases)
-    if ranked.empty:
+    """Canonical threshold-based ROC curve from per-source scores."""
+    scored = cases.dropna(subset=["score", "target"])
+    if scored.empty or scored["target"].nunique() < 2:
         return pd.DataFrame(columns=["fpr", "tpr", "score"])
-    positives = int(ranked["target"].sum())
-    negatives = len(ranked) - positives
-    if positives == 0 or negatives == 0:
-        return pd.DataFrame(columns=["fpr", "tpr", "score"])
-    cumulative_tp = ranked["target"].cumsum()
-    counts = pd.Series(range(1, len(ranked) + 1), index=ranked.index)
-    curve = pd.DataFrame(
-        {
-            "fpr": (counts - cumulative_tp) / negatives,
-            "tpr": cumulative_tp / positives,
-            "score": ranked["score"],
-        }
+    fpr, tpr, thresholds = roc_curve(
+        scored["target"].astype(int), scored["score"].astype(float)
     )
+    thresholds = np.asarray(thresholds, dtype=float)
+    thresholds[~np.isfinite(thresholds)] = np.nan
+    curve = pd.DataFrame({"fpr": fpr, "tpr": tpr, "score": thresholds})
     return _downsample(curve, max_points)
 
 
-def _ranked_targets(cases: pd.DataFrame) -> pd.DataFrame:
-    ranked = cases.dropna(subset=["score"]).sort_values("score", ascending=False)
-    return ranked[["score", "target"]].astype({"target": int}).reset_index(drop=True)
+def threshold_operating_point(
+    cases: pd.DataFrame, threshold: float | None
+) -> pd.DataFrame:
+    """Return the exact PR/ROC coordinates for a binary score threshold."""
+    if threshold is None or pd.isna(threshold):
+        return pd.DataFrame(columns=["recall", "precision", "fpr", "tpr", "score"])
+    scored = cases.dropna(subset=["score", "target"])
+    if scored.empty or scored["target"].nunique() < 2:
+        return pd.DataFrame(columns=["recall", "precision", "fpr", "tpr", "score"])
+    target = scored["target"].astype(int)
+    predicted = scored["score"].astype(float).ge(float(threshold))
+    tp = int((predicted & target.eq(1)).sum())
+    fp = int((predicted & target.eq(0)).sum())
+    positives = int(target.eq(1).sum())
+    negatives = int(target.eq(0).sum())
+    recall = tp / positives if positives else 0.0
+    return pd.DataFrame(
+        [{
+            "recall": recall,
+            "precision": tp / (tp + fp) if tp + fp else 0.0,
+            "fpr": fp / negatives if negatives else 0.0,
+            "tpr": recall,
+            "score": float(threshold),
+        }]
+    )
 
 
 def _downsample(curve: pd.DataFrame, max_points: int) -> pd.DataFrame:
     if len(curve) <= max_points:
         return curve
-    step = max(1, len(curve) // max_points)
-    sampled = curve.iloc[::step]
-    if sampled.index[-1] != curve.index[-1]:
-        sampled = pd.concat([sampled, curve.tail(1)])
+    indices = np.linspace(0, len(curve) - 1, num=max_points, dtype=int)
+    sampled = curve.iloc[np.unique(indices)]
     return sampled.reset_index(drop=True)
 
 

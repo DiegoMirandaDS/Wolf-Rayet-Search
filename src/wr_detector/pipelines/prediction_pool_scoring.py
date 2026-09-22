@@ -520,7 +520,7 @@ def _load_pool_contract(
     with duckdb.connect(str(pool_db), read_only=True) as con:
         build = con.execute(
             """
-            SELECT envelope_sha256, bitmask_schema_version,
+            SELECT status, envelope_sha256, bitmask_schema_version,
                    bitmask_schema_sha256
             FROM exact_union_builds
             WHERE pool_build_id=?
@@ -536,6 +536,10 @@ def _load_pool_contract(
     if build is None or contract is None:
         raise ValueError(
             f"Incomplete exact-union contract for {pool_build_id!r}."
+        )
+    if str(build[0]) != "completed":
+        raise ValueError(
+            f"Exact-union pool {pool_build_id!r} is not completed: {build[0]}."
         )
     schema_payload = _as_json(contract[0])
     loci = _as_json(contract[1])
@@ -553,13 +557,13 @@ def _load_pool_contract(
             )
         ),
     )
-    if schema.version != str(build[1]) or schema.sha256 != str(build[2]):
+    if schema.version != str(build[2]) or schema.sha256 != str(build[3]):
         raise ValueError(
             "The persisted bitmask schema does not match exact_union_builds."
         )
     return {
         "pool_build_id": pool_build_id,
-        "envelope_sha256": str(build[0]),
+        "envelope_sha256": str(build[1]),
         "schema": schema,
         "loci": loci,
     }
@@ -1236,7 +1240,7 @@ def _quote(identifier: str) -> str:
 
 
 def _validate_path_component(value: str, *, label: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", str(value)):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*", str(value)):
         raise ValueError(
             f"{label} contains unsafe path characters: {value!r}"
         )

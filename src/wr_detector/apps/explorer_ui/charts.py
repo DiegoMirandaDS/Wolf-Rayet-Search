@@ -446,7 +446,9 @@ def composition_bars(composition: pd.DataFrame) -> alt.Chart | None:
     )
 
 
-def precision_recall_chart(curve: pd.DataFrame, *, threshold: float | None = None) -> alt.Chart | None:
+def precision_recall_chart(
+    curve: pd.DataFrame, *, operating: pd.DataFrame | None = None
+) -> alt.Chart | None:
     if curve.empty:
         return None
     line = (
@@ -463,8 +465,7 @@ def precision_recall_chart(curve: pd.DataFrame, *, threshold: float | None = Non
         )
     )
     layers = [line]
-    operating = _operating_point(curve, threshold)
-    if operating is not None:
+    if operating is not None and not operating.empty:
         layers.append(
             alt.Chart(operating)
             .mark_point(size=140, filled=True, color="#e15759")
@@ -481,7 +482,9 @@ def precision_recall_chart(curve: pd.DataFrame, *, threshold: float | None = Non
     return alt.layer(*layers).properties(width="container", height=320)
 
 
-def roc_chart(curve: pd.DataFrame, *, threshold: float | None = None) -> alt.Chart | None:
+def roc_chart(
+    curve: pd.DataFrame, *, operating: pd.DataFrame | None = None
+) -> alt.Chart | None:
     if curve.empty:
         return None
     diagonal = (
@@ -503,22 +506,13 @@ def roc_chart(curve: pd.DataFrame, *, threshold: float | None = None) -> alt.Cha
         )
     )
     layers = [diagonal, line]
-    operating = _operating_point(curve, threshold)
-    if operating is not None:
+    if operating is not None and not operating.empty:
         layers.append(
             alt.Chart(operating)
             .mark_point(size=140, filled=True, color="#e15759")
             .encode(x="fpr:Q", y="tpr:Q", tooltip=[alt.Tooltip("score:Q", title="threshold", format=".4f")])
         )
     return alt.layer(*layers).properties(width="container", height=320)
-
-
-def _operating_point(curve: pd.DataFrame, threshold: float | None) -> pd.DataFrame | None:
-    if threshold is None or curve.empty or "score" not in curve.columns:
-        return None
-    above = curve[curve["score"] >= threshold]
-    return above.tail(1) if not above.empty else None
-
 
 def confusion_matrix_chart(confusion: dict[str, int]) -> alt.Chart:
     data = pd.DataFrame(

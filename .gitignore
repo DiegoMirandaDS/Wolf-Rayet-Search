@@ -19,6 +19,7 @@ Thumbs.db
 *.log
 data.zip
 *.zip
+outputs/
 
 data/databases/*.duckdb
 data/databases/*.duckdb.wal
@@ -31,6 +32,7 @@ data/raw/prediction_pool_exact_union_smoke_v1/*
 data/raw/prediction_pool_exact_union_validation_v1/*
 data/raw/prediction_pool_locus_pilot/*
 data/raw/prediction_pool_locus_audit/*
+data/raw/simbad_candidate_review/*
 data/processed/reference/*.parquet
 data/processed/simbad_negative/*.parquet
 data/processed/modeling/*.parquet
@@ -59,8 +61,13 @@ reports/modeling/artifacts/*
 reports/modeling/*.png
 reports/analysis/prediction_pool_locus_pilot/*
 reports/analysis/prediction_pool_locus_audit/*
+reports/analysis/prediction_pool_exact_union_v1/*
+reports/analysis/prediction_pool_scoring/*
+reports/analysis/prediction_pool_candidates/*
+reports/analysis/notebook_execution/*
 reports/public/_rendered_check/
 reports/public/chart_map.md
+reports/public/figures/pipeline_overview.svg
 local/report_source/
 !reports/figures/.gitkeep
 !reports/tables/.gitkeep
