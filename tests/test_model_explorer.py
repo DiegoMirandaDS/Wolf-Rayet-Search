@@ -7,6 +7,18 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from wr_detector.apps.explorer_ui.candidate_plots import (
+    candidate_galactic_plane,
+    candidate_mollweide,
+    candidate_photometric,
+    disposition_bar,
+    jaccard_heatmap,
+    model_rank_ladder,
+    pool_tile_map,
+    rank_agreement,
+    scoring_coverage,
+    support_distribution,
+)
 from wr_detector.apps.explorer_ui.charts import (
     color_magnitude,
     dataset_heatmap,
@@ -79,6 +91,100 @@ def test_altair_charts_omit_optional_none_formats():
     assert "format" not in bar_spec["encoding"]["x"]["axis"]
     assert vertical_bar_spec["layer"][0]["encoding"]["x"]["sort"] == "-y"
     assert "format" not in heatmap_spec["layer"][0]["encoding"]["color"]["legend"]
+
+
+def test_prediction_pool_candidate_charts_compile():
+    candidates = pd.DataFrame(
+        {
+            "source_id": [1, 2],
+            "consensus_rank": [1, 2],
+            "best_model_rank": [1, 5],
+            "model_support": [5, 4],
+            "review_disposition": [
+                "no_exact_match",
+                "emission_or_ambiguous",
+            ],
+            "simbad_main_id": [None, "Emission source"],
+            "BP_RP": [1.5, 2.0],
+            "G": [13.0, 14.0],
+            "mollweide_x": [0.1, -0.2],
+            "mollweide_y": [0.2, -0.1],
+            "galactic_l": [10.0, 20.0],
+            "galactic_b": [1.0, -2.0],
+            "distance_plotted": [True, True],
+            "distance_kpc": [2.0, 3.0],
+            "parallax_over_error": [5.0, 4.0],
+            "galactocentric_x_kpc": [7.0, 6.0],
+            "galactocentric_y_kpc": [1.0, -1.0],
+        }
+    )
+    tiles = pd.DataFrame(
+        {
+            "tile_id": ["tile"],
+            "status": ["completed"],
+            "ra_min": [0.0],
+            "ra_max": [10.0],
+            "dec_min": [-5.0],
+            "dec_max": [5.0],
+            "acquired_pre_locus": [100],
+            "written": [80],
+            "retention_fraction": [0.8],
+        }
+    )
+    scoring = pd.DataFrame(
+        {
+            "model_label": ["broad"],
+            "eligible_rows": [100],
+            "scored_rows": [90],
+            "missing_feature_rows": [10],
+        }
+    )
+    jaccard = pd.DataFrame(
+        {
+            "left_role": ["a"],
+            "right_role": ["a"],
+            "jaccard": [1.0],
+            "intersection": [100],
+            "top_k": [100],
+        }
+    )
+    evidence = pd.DataFrame(
+        {
+            "role": ["broad"],
+            "model_rank": [2],
+            "score": [0.9],
+            "rrf_contribution": [1 / 62],
+        }
+    )
+
+    charts = [
+        pool_tile_map(tiles),
+        scoring_coverage(scoring),
+        disposition_bar(
+            pd.DataFrame(
+                {
+                    "review_disposition": ["no_exact_match"],
+                    "rows": [1],
+                }
+            )
+        ),
+        jaccard_heatmap(jaccard),
+        support_distribution(candidates),
+        rank_agreement(candidates),
+        candidate_photometric(
+            candidates,
+            selected_source_id=1,
+            x="BP_RP",
+            y="G",
+        ),
+        candidate_mollweide(candidates, selected_source_id=1),
+        candidate_galactic_plane(candidates, selected_source_id=1),
+        model_rank_ladder(evidence),
+    ]
+
+    assert all(chart is not None for chart in charts)
+    for chart in charts:
+        chart.to_dict()
 
 
 def test_case_visualizations_compile_with_diagnostic_layers():
@@ -299,6 +405,117 @@ active_model_control(results, widget_key="test_picker")
     apply_button = next(button for button in app.button if button.label == "Use as active model")
     apply_button.click().run()
     assert app.session_state["selected_model_result_id"] == "r_smote"
+    assert not app.exception
+
+
+def test_compare_activation_preserves_checked_ranking_order():
+    source = """
+import pandas as pd
+from wr_detector.apps.explorer_ui.pages.compare import _active_selection_controls
+
+compared = pd.DataFrame([
+    {"result_id": "ranked_first"},
+    {"result_id": "ranked_second"},
+    {"result_id": "ranked_third"},
+])
+_active_selection_controls(compared)
+"""
+    app = AppTest.from_string(source, default_timeout=20).run()
+
+    activate = next(
+        button
+        for button in app.button
+        if button.label == "Make selected models active"
+    )
+    activate.click().run()
+
+    assert app.session_state["active_model_result_ids"] == [
+        "ranked_first",
+        "ranked_second",
+        "ranked_third",
+    ]
+    assert app.session_state["selected_model_result_id"] == "ranked_first"
+    assert not app.exception
+
+
+def test_active_model_selection_navigation_picker_and_deactivation():
+    source = """
+import pandas as pd
+from wr_detector.apps.explorer_ui.ui import active_model_control
+
+results = pd.DataFrame([
+    {
+        "result_id": "best",
+        "dataset_variant": "relaxed_photometry",
+        "includes_parallax_error": False,
+        "model": "xgboost",
+        "sampler": "none",
+        "selection_status": "accepted",
+        "ranking_score": 0.90,
+        "holdout_recall_at_100": 0.80,
+        "holdout_average_precision": 0.70,
+    },
+    {
+        "result_id": "selected_first",
+        "dataset_variant": "strict_poe_3",
+        "includes_parallax_error": True,
+        "model": "random_forest",
+        "sampler": "smote",
+        "selection_status": "accepted",
+        "ranking_score": 0.75,
+        "holdout_recall_at_100": 0.70,
+        "holdout_average_precision": 0.60,
+    },
+    {
+        "result_id": "selected_second",
+        "dataset_variant": "relaxed_poe_2",
+        "includes_parallax_error": False,
+        "model": "hist_gradient_boosting",
+        "sampler": "smote_enn",
+        "selection_status": "overfit_warning",
+        "ranking_score": 0.65,
+        "holdout_recall_at_100": 0.60,
+        "holdout_average_precision": 0.50,
+    },
+])
+active_model_control(results, widget_key="selection_picker")
+"""
+    app = AppTest.from_string(source, default_timeout=20)
+    app.session_state["active_model_result_ids"] = [
+        "selected_first",
+        "selected_second",
+    ]
+    app.session_state["selected_model_result_id"] = "best"
+    app.run()
+
+    assert app.session_state["selected_model_result_id"] == "selected_first"
+    selected_picker = next(
+        widget for widget in app.selectbox if widget.label == "Selected model"
+    )
+    assert len(selected_picker.options) == 2
+    assert selected_picker.options[0].startswith("RF/SMOTE | strict_poe_3")
+    assert selected_picker.options[1].startswith("HGB/SMOTE-ENN | relaxed_poe_2")
+
+    selected_picker.select("selected_second").run()
+    assert app.session_state["selected_model_result_id"] == "selected_first"
+    apply_selected = next(
+        button for button in app.button if button.label == "Use as active model"
+    )
+    apply_selected.click().run()
+    assert app.session_state["selected_model_result_id"] == "selected_second"
+
+    next_button = next(button for button in app.button if button.label == "→")
+    next_button.click().run()
+    assert app.session_state["selected_model_result_id"] == "selected_first"
+
+    deactivate = next(
+        button for button in app.button if button.label == "Deactivate selection"
+    )
+    deactivate.click().run()
+    with pytest.raises(KeyError):
+        app.session_state["active_model_result_ids"]
+    assert app.session_state["selected_model_result_id"] == "best"
+    assert app.session_state["compare_selection_version"] == 1
     assert not app.exception
 
 

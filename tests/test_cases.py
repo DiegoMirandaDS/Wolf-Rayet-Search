@@ -15,6 +15,7 @@ from wr_detector.modeling.cases import (
     load_case_predictions,
     precision_recall_points,
     roc_points,
+    threshold_operating_point,
     subtype_recovery,
     wr_broad_subtype,
 )
@@ -157,19 +158,36 @@ def test_ranking_curve_points():
     pr = precision_recall_points(cases)
     roc = roc_points(cases)
 
-    assert pr["recall"].tolist() == pytest.approx([0.5, 0.5, 1.0, 1.0])
-    assert pr["precision"].tolist() == pytest.approx([1.0, 0.5, 2 / 3, 0.5])
-    assert roc["fpr"].tolist() == pytest.approx([0.0, 0.5, 0.5, 1.0])
-    assert roc["tpr"].tolist() == pytest.approx([0.5, 0.5, 1.0, 1.0])
+    assert pr["recall"].tolist() == pytest.approx([0.0, 0.5, 0.5, 1.0, 1.0])
+    assert pr["precision"].tolist() == pytest.approx([1.0, 1.0, 0.5, 2 / 3, 0.5])
+    assert roc["fpr"].tolist() == pytest.approx([0.0, 0.0, 0.5, 0.5, 1.0])
+    assert roc["tpr"].tolist() == pytest.approx([0.0, 0.5, 0.5, 1.0, 1.0])
+    point = threshold_operating_point(cases, 0.8).iloc[0]
+    assert point[["precision", "recall", "fpr", "tpr"]].tolist() == pytest.approx(
+        [0.5, 0.5, 0.5, 0.5]
+    )
 
 
 def test_ranking_curves_downsample_and_handle_degenerate_input():
     many = pd.DataFrame({"score": [1 - i / 2000 for i in range(2000)], "target": [i % 2 for i in range(2000)]})
-    assert len(precision_recall_points(many, max_points=100)) <= 102
+    assert len(precision_recall_points(many, max_points=100)) <= 100
 
     no_positives = pd.DataFrame({"score": [0.5, 0.4], "target": [0, 0]})
     assert precision_recall_points(no_positives).empty
     assert roc_points(no_positives).empty
+
+
+def test_ranking_curves_group_tied_scores_by_realizable_threshold():
+    cases = pd.DataFrame(
+        {"score": [0.9, 0.8, 0.8, 0.1], "target": [1, 1, 0, 0]}
+    )
+    pr = precision_recall_points(cases, max_points=100)
+    roc = roc_points(cases, max_points=100)
+
+    assert pr["score"].dropna().tolist() == pytest.approx([0.9, 0.8, 0.1])
+    assert roc["score"].dropna().tolist() == pytest.approx([0.9, 0.8, 0.1])
+    tied_point = pr.loc[pr["score"].eq(0.8)].iloc[0]
+    assert tied_point[["precision", "recall"]].tolist() == pytest.approx([2 / 3, 1.0])
 
 
 def test_case_overlap_rejects_unknown_kind(tmp_path):

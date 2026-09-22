@@ -51,7 +51,8 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --require-hashes -r requirements-review.txt
 python -m pip install -e . --no-deps --no-build-isolation
-wr-detector explore-models --config configs/models.yaml
+wr-detector explore-models --config configs/models.yaml `
+  --candidate-config configs/prediction_pool_candidates.yaml
 ```
 
 The launcher binds Streamlit to `127.0.0.1`, keeps CORS and XSRF protection
@@ -75,11 +76,13 @@ retain every source accepted by at least one model-compatible dataset variant:
 
 The existing 58,037,788-row pool is therefore registered as a read-only legacy
 build. It remains useful for auditing and engineering checks, but it is not
-approved for definitive candidate scoring. The replacement prediction-pool
-build is running in parallel under the internal build id `exact_union`. It
-persists the broad acquisition layer and the compatible-variant bitmask for
-every source. No definitive prediction scores or candidate list are reported
-until that build finishes and passes its final audit.
+approved for definitive candidate scoring. The replacement exact-union build
+is complete and audited: 675/675 tiles, 185,135,016 acquired rows, 65,010,724
+accepted by the compatible-variant union, 32,345 known exclusions and
+64,978,379 operational sources. The frozen `run_v3_main` five-model application
+completed 3,375/3,375 scoring units. Its persisted RRF review contains the
+top-500 SIMBAD-enriched shortlist, the detailed top 20 and five follow-up
+priorities.
 
 ## Scientific workflow
 
@@ -232,14 +235,21 @@ neutral estimator weights so imbalance is not corrected twice.
 
 ### Phase 5 — Model inspection and optional validation audit
 
-The Streamlit explorer reads experiment history from DuckDB and provides
-run-level comparison, case review, subtype recovery, contaminant analysis and
-validation-layer diagnostics. Its compact active-model context stays
+The Streamlit explorer reads experiment history and prediction-pool review
+artifacts from DuckDB. Navigation is grouped by task: **Models** contains run
+comparison and holdout case review; **Validation / second layer** contains
+lineage-compatible validators and stack audits; **Prediction pool** contains
+pool status, candidate rankings and case-level candidate review. Its compact
+active-model context stays
 synchronized across pages without exposing long result ids in the sidebar.
 The active-model picker first narrows to a dataset variant and then offers its
 short, searchable configuration list. On Compare, table checks select up to
-eight models for the charts; a separate `Set active` action can explicitly
-promote one checked row. Checking a row never changes the active model.
+eight models for the charts; a separate action can promote all checked rows as
+an ordered active selection without changing state implicitly. The best-ranked
+checked model becomes active first. Previous/next arrows and the active-model
+picker then move through that selection on every model page. The `Deactivate selection`
+action clears the checked set, restores the unrestricted dataset/configuration picker
+and activates the best model by the default ranking score.
 Case review can switch between top-K review states and conventional
 operating-threshold TP/FP/FN/TN states. Its photometric plot supports
 color-magnitude and color-color exploration with intra-mission colors, plus a
@@ -253,7 +263,8 @@ negative-pass metrics remain available under Validation Layers; its model
 binaries and reduced datasets are not part of the reviewer bundle.
 
 ```powershell
-wr-detector explore-models --config configs/models.yaml
+wr-detector explore-models --config configs/models.yaml `
+  --candidate-config configs/prediction_pool_candidates.yaml
 ```
 
 ### Phase 6 — Gaia prediction pool
@@ -306,7 +317,8 @@ wr-detector build-prediction-pool-exact-union `
 
 # Run after every build session; definitive scoring requires a passing audit
 wr-detector audit-prediction-pool-exact-union-build `
-  --config configs/prediction_pool_exact_union.yaml
+  --config configs/prediction_pool_exact_union.yaml `
+  --output-json reports/analysis/prediction_pool_exact_union_v1/build_audit.json
 
 # Inspect the legacy query plan without launching Gaia jobs
 wr-detector build-prediction-pool --config configs/prediction_pool.yaml --dry-run
@@ -363,6 +375,56 @@ variant bit, feature list and pool schema before inference; reads only
 completed acquisition tiles; and writes atomic, resumable score Parquet per
 model and tile. Sources compatible with the variant but missing a model feature
 are counted in the manifest and are not imputed.
+
+The canonical candidate application is `score_run_v3_main_top5_v1`. Its five
+explicit `result_id` values are stored in
+`configs/prediction_pool_candidates.yaml`; the scoring command must receive the
+same five values. After the full scoring audit passes, build and audit the
+reproducible candidate review:
+
+```powershell
+wr-detector build-prediction-pool-candidates `
+  --config configs/prediction_pool_candidates.yaml
+
+# Replace the persisted SIMBAD snapshot only when a fresh catalog read is intended
+wr-detector build-prediction-pool-candidates `
+  --config configs/prediction_pool_candidates.yaml `
+  --refresh-simbad
+
+wr-detector audit-prediction-pool-candidates `
+  --config configs/prediction_pool_candidates.yaml
+
+# Build and audit the Drive-ready candidate/model handoff
+wr-detector build-prediction-pool-delivery `
+  --config configs/prediction_pool_candidates.yaml
+wr-detector audit-prediction-pool-delivery `
+  --config configs/prediction_pool_candidates.yaml
+```
+
+The review keeps the top 10,000 rows per model, uses equal-weight reciprocal
+rank fusion (`k=60`), enriches the top 500 with SIMBAD and Gaia diagnostics,
+and exports a 20-object review plus five follow-up priorities. Model scores
+remain ranking values, not calibrated probabilities. A missing SIMBAD match is
+not evidence that an object is previously unknown.
+
+The stakeholder delivery contains the complete 33,215-source union of the five
+per-model top-10,000 lists plus an exact top-100 truncation. It publishes both
+the original RRF rank and an eligibility-aware rank
+`rrf_score / eligible_model_count`. Every model contributes explicit status,
+eligibility reason, exact-locus/photometric-quality/astrometric decisions,
+original per-model rank and score. `ineligible_variant` has null rank/score,
+while `eligible_below_top_10000` passed every filter, retains its model score
+and has a null truncated rank. The package also contains the five hash-verified
+joblib files, a compact Spanish `metricas_modelos.csv`, five complete Model
+Detail screenshots and one Spanish `diccionario_columnas.csv` covering both
+delivered CSV schemas. Each joblib has a neighboring JSON with its fitted
+hyperparameters, training columns, exact locus planes, photometric/astrometric
+restrictions, validation summary and hashes. Only the six YAML files required
+to reproduce training, pool construction, scoring and ranking are included.
+README/guide files, delivery manifests, duplicate technical tables, standalone
+PR images and the physical tile inventory are deliberately omitted. All
+delivered paths are package-relative; local usernames and workspace paths are
+not exported.
 
 Do not delete the legacy DuckDB or its 675 Parquet tiles. Do not run the
 non-dry-run legacy builder. The production prediction-pool configuration was opened
@@ -456,6 +518,8 @@ under `reports/public/` is the deliberate exception:
 | Legacy prediction pool | `data/databases/prediction_pool.duckdb` |
 | Prediction pool (build id `exact_union`) | `data/databases/prediction_pool_exact_union_v1.duckdb` |
 | Prediction scoring registry | `data/databases/prediction_pool_scoring.duckdb` |
+| Candidate review and SIMBAD snapshot index | `data/databases/prediction_pool_candidates.duckdb` |
+| Candidate/model delivery | `outputs/wr_prediction_delivery_v1/` |
 | Reduced modelling datasets | `data/processed/modeling/` |
 | Model runs | `reports/modeling/runs/{run_id}/` |
 | Prediction scores | `data/processed/prediction_pool_scores/{scoring_run_id}/` |
@@ -496,15 +560,16 @@ python -m compileall src\wr_detector
 
 The next work should be completed in this order:
 
-1. finish the running prediction-pool acquisition and pass its coverage, checksum,
-   manifest and mask audit;
-2. select one or more synchronized `result_id` values from `run_v3_main` using
-   an explicit follow-up budget and the stability diagnostics;
-3. validate scoring with `--dry-run`, then score and audit one tile;
-4. resume full scoring and review the resulting short lists by subtype and
-   contaminant class;
-5. audit Gaia BP/RP, RVS and H-alpha coverage before adding spectral evidence
-   as optional enrichment.
+1. keep the completed exact-union pool immutable and require its physical audit
+   before every new full scoring application;
+2. preserve the completed and audited `score_run_v3_main_top5_v1` artifacts;
+3. refresh the versioned SIMBAD snapshot only when a live catalog update is
+   explicitly intended;
+4. inspect the 20-object review and obtain spectroscopy for the five follow-up
+   priorities;
+5. use the read-only Model Explorer candidate review to coordinate visual
+   inspection and spectroscopy without recalculating ranking logic in
+   Streamlit.
 
 The legacy pool remains available throughout this transition and is never
 overwritten.

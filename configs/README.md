@@ -1,11 +1,11 @@
 # Configuration map
 
-There are 15 tracked YAML files. They have four roles:
+There are 16 tracked YAML files. They have four roles:
 
 | Role | Files |
 |---|---|
 | Shared inputs | `paths.yaml`, `catalogs.yaml`, `filters.yaml` |
-| Reproducible pipelines | `reference.yaml`, `simbad_negative.yaml`, `models.yaml`, `second_layer.yaml`, `prediction_pool_scoring.yaml` |
+| Reproducible pipelines | `reference.yaml`, `simbad_negative.yaml`, `models.yaml`, `second_layer.yaml`, `prediction_pool_scoring.yaml`, `prediction_pool_candidates.yaml` |
 | Current prediction pool | `prediction_pool_exact_union.yaml` |
 | Small prediction-pool overlays | `prediction_pool_exact_union_smoke.yaml`, `prediction_pool_exact_union_validation.yaml` |
 | Audits and lineage | `prediction_pool_locus_pilot.yaml`, `prediction_pool_locus_audit.yaml`, `prediction_pool_build_registry.yaml` |
@@ -20,6 +20,13 @@ explicitly selected model results from the canonical training-history DuckDB.
 It controls only scoring storage, streaming batch size and the complete-pool
 safety gate; model selection stays on the CLI through reviewed `result_id`
 values.
+
+`prediction_pool_candidates.yaml` freezes the reviewed five-model application,
+RRF shortlist limits, SIMBAD snapshot policy and candidate-review outputs. It
+must match a completed scoring run exactly. Its `delivery` section versions the
+compact stakeholder handoff: eligibility-aware full/top-100 CSVs, a Spanish
+model-metrics CSV, five joblib+JSON pairs, complete Model Detail screenshots,
+one Spanish column dictionary and only the required lineage YAMLs.
 
 `prediction_pool.yaml` is retained only to describe and audit the old
 `aggregated_mean_fit` build. Code rejects attempts to mutate it.

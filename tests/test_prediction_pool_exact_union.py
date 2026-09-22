@@ -14,6 +14,7 @@ from wr_detector.pipelines.prediction_pool import BASE_COLUMNS, SkyTile
 from wr_detector.pipelines.prediction_pool_exact_union import (
     completed_tile_is_valid,
     deduplicate_tmass_crossmatches,
+    finalize_exact_union_build_status,
     initialize_exact_union_database,
     persist_acquisition_tile,
     prepare_acquisition_frame,
@@ -203,3 +204,63 @@ def test_validated_tile_resume_and_logical_eligible_view(tmp_path: Path):
         ).fetchall()
     assert acquisition_ids == [(1,), (2,), (3,)]
     assert eligible_ids == [(2,)]
+
+
+def test_build_finalization_requires_exact_completed_tile_set(tmp_path: Path):
+    loci = _loci()
+    schema = build_variant_mask_schema(list(loci))
+    db_path = tmp_path / "pool.duckdb"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("test: true\n", encoding="utf-8")
+    initialize_exact_union_database(
+        db_path,
+        pool_build_id="build",
+        config_path=config_path,
+        envelope={"sha256": "envelope", "color_bounds": {}, "variants": []},
+        coverage={"coverage_fraction": 1.0},
+        schema=schema,
+        loci=loci,
+    )
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            INSERT INTO exact_union_tiles (
+                pool_build_id, tile_id, status, updated_at
+            ) VALUES
+                ('build', 'a', 'completed', current_timestamp),
+                ('build', 'b', 'running', current_timestamp)
+            """
+        )
+
+    assert finalize_exact_union_build_status(
+        db_path,
+        pool_build_id="build",
+        expected_tile_ids=["a", "b"],
+    ) == "partial"
+
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            UPDATE exact_union_tiles SET status='completed'
+            WHERE pool_build_id='build' AND tile_id='b'
+            """
+        )
+    assert finalize_exact_union_build_status(
+        db_path,
+        pool_build_id="build",
+        expected_tile_ids=["a", "b"],
+    ) == "completed"
+
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            INSERT INTO exact_union_tiles (
+                pool_build_id, tile_id, status, updated_at
+            ) VALUES ('build', 'extra', 'completed', current_timestamp)
+            """
+        )
+    assert finalize_exact_union_build_status(
+        db_path,
+        pool_build_id="build",
+        expected_tile_ids=["a", "b"],
+    ) == "partial"

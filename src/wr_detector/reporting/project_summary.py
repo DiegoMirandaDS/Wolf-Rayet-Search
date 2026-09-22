@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import duckdb
@@ -437,8 +438,21 @@ def generate_figures(evidence: Evidence, figures_dir: Path) -> dict[str, Path]:
 
 
 def _save(fig: plt.Figure, output: Path) -> None:
-    fig.savefig(output, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    temporary = output.with_name(
+        f".{output.stem}.{uuid4().hex}.tmp{output.suffix}"
+    )
+    try:
+        fig.savefig(
+            temporary,
+            format=output.suffix.lstrip("."),
+            dpi=200,
+            bbox_inches="tight",
+            facecolor="white",
+        )
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+        plt.close(fig)
 
 
 def _plot_pipeline(output: Path) -> None:
@@ -1127,7 +1141,14 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
         label="Pendientes",
     )
     axes[1].set_xlim(0, total)
-    axes[1].set_title("Build exact-union en curso", loc="left")
+    axes[1].set_title(
+        (
+            "Build exact-union completado"
+            if status["status"] == "completed"
+            else "Build exact-union en curso"
+        ),
+        loc="left",
+    )
     axes[1].set_xlabel("Tiles terminales")
     axes[1].text(
         completed / 2 if completed else 2,
@@ -1151,7 +1172,7 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
     )
     axes[1].legend(fontsize=8, loc="lower right")
     fig.suptitle(
-        "Por qué se reconstruye la prediction pool y cuál es su estado",
+        "Auditoría del pool legacy y estado del exact-union",
         x=0.07,
         ha="left",
         fontsize=13,

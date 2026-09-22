@@ -1,0 +1,54 @@
+scoring_config: configs/prediction_pool_scoring.yaml
+training_history_db: data/databases/training_history.duckdb
+
+review:
+  review_run_id: candidate_review_v3_main_top5_v1
+  scoring_run_id: score_run_v3_main_top5_v1
+  model_run_id: run_v3_main
+  models:
+    - result_id: 9e08cb4f7517ab76d5b152e7a7dc53e02c826321
+      model: xgboost
+      role: broad_shortlist
+      delivery_key: m1_broad_xgb
+    - result_id: 49957d2295543512d384313f5c352a619fac7be8
+      model: xgboost
+      role: average_precision_leader
+      delivery_key: m2_ap_xgb_smote
+    - result_id: 2efb4b2059dac012e52b9ff3f11e17fe4995dc66
+      model: xgboost
+      role: accepted_stable
+      delivery_key: m3_stable_xgb_smote
+    - result_id: 84e88df5ea4d32863d5a2918648af8fbf63ec034
+      model: xgboost
+      role: strict_photometry_counterpart
+      delivery_key: m4_strict_xgb
+    - result_id: 9275e7d7da706b3ada8ea1f8c05dae6b833417d1
+      model: hist_gradient_boosting
+      role: estimator_diversity
+      delivery_key: m5_diverse_hgb
+
+ranking:
+  method: reciprocal_rank_fusion
+  rrf_k: 60
+  per_model_limit: 10000
+  review_limit: 500
+  deep_review_limit: 20
+  headline_limit: 5
+
+simbad:
+  snapshot_path: data/raw/simbad_candidate_review/{review_run_id}.parquet
+  timeout_seconds: 180
+  batch_size: 100
+  positional_fallback_limit: 20
+  positional_radius_arcsec: 1.0
+
+outputs:
+  database: data/databases/prediction_pool_candidates.duckdb
+  directory: reports/analysis/prediction_pool_candidates
+
+delivery:
+  delivery_id: wr_prediction_delivery_v1
+  directory: outputs/wr_prediction_delivery_v1
+  # The large file contains the complete union of the five per-model top-10,000
+  # lists. The top file is an exact truncation after eligibility-aware sorting.
+  top_limit: 100
