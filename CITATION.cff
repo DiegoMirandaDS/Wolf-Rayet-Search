@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software or methodology, please cite this repository."
+title: "Wolf-Rayet Search"
+type: software
+authors:
+  - family-names: "Miranda"
+    given-names: "Diego"
+repository-code: "https://github.com/DiegoMirandaDS/Wolf-Rayet-Search"
+license: MIT
+date-released: 2026-09-21
