@@ -504,3 +504,35 @@ The next work should be completed in this order:
 
 The legacy pool remains available throughout this transition and is never
 overwritten.
+
+## License
+
+The source code and original project documentation in this repository are
+licensed under the MIT License. See [LICENSE](LICENSE).
+
+This license applies only to original material contained in this repository.
+Astronomical catalogues and externally sourced data remain subject to their
+respective licenses, terms of use, and citation requirements.
+
+This project currently makes use of data and services including:
+
+- ESA Gaia / Gaia DPAC (Gaia DR3)
+- 2MASS
+- WISE / AllWISE
+- SIMBAD
+- VizieR
+- Galactic Wolf-Rayet catalogues and associated publications
+
+Users of this project are responsible for complying with the citation and
+attribution requirements of the original data providers.
+
+## Research status
+
+This repository contains ongoing research.
+
+The methodology, model selection, prediction pool, candidate rankings, and
+scientific conclusions may change as the project develops.
+
+Outputs produced by the current pipeline should not be interpreted as
+confirmed discoveries of Wolf-Rayet stars without independent astronomical
+validation and follow-up observations.
