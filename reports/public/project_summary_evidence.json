@@ -1,5 +1,5 @@
 {
-  "snapshot_date": "2026-07-26",
+  "snapshot_date": "2026-09-22",
   "catalogue": {
     "version": "v1.33 (Gaia DR3), 705 WR stars, Aug 2025",
     "catalogue_rows": 705,
@@ -311,14 +311,14 @@
     "known_wr_exact_not_current": 2
   },
   "prediction_pool_status": {
-    "status": "running",
+    "status": "completed",
     "total_tiles": 675,
-    "completed_tiles": 673,
+    "completed_tiles": 675,
     "running_tiles": 0,
-    "failed_tiles": 2,
-    "acquired_rows": 184799111,
-    "eligible_rows": 64875543,
-    "parquet_bytes": 65877100083,
+    "failed_tiles": 0,
+    "acquired_rows": 185135016,
+    "eligible_rows": 64978379,
+    "parquet_bytes": 66005629506,
     "estimated_rows": 154000000
   }
 }
