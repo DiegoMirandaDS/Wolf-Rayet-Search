@@ -23,7 +23,6 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 import matplotlib.pyplot as plt
-import matplotlib.patheffects as path_effects
 import numpy as np
 import pandas as pd
 import yaml
@@ -80,6 +79,7 @@ class Evidence:
     reference_positions: pd.DataFrame
     negative_positions: pd.DataFrame
     top_candidates: pd.DataFrame
+    candidate_context: pd.DataFrame
 
 
 def _path(relative: str | Path) -> Path:
@@ -299,6 +299,7 @@ def collect_evidence(run_id: str = DEFAULT_RUN_ID) -> Evidence:
     }
     pool_status = _prediction_pool_status()
     top_candidates = _load_top_candidates()
+    candidate_context = _load_candidate_context()
 
     return Evidence(
         snapshot_date=datetime.now(ZoneInfo("America/Santiago")).date().isoformat(),
@@ -317,6 +318,7 @@ def collect_evidence(run_id: str = DEFAULT_RUN_ID) -> Evidence:
         reference_positions=reference_positions,
         negative_positions=negative_positions,
         top_candidates=top_candidates,
+        candidate_context=candidate_context,
     )
 
 
@@ -330,6 +332,27 @@ def _load_top_candidates() -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path)
+
+
+def _load_candidate_context() -> pd.DataFrame:
+    """The real consensus top 100 supplies context for the five follow-ups."""
+    review_run_id = _read_yaml("configs/prediction_pool_candidates.yaml")["review"]["review_run_id"]
+    path = _path(
+        f"reports/analysis/prediction_pool_candidates/{review_run_id}/top_500_candidates.csv"
+    )
+    if not path.exists():
+        return pd.DataFrame()
+    columns = [
+        "consensus_rank", "source_id", "galactic_l", "galactic_b",
+        "BP_RP", "G", "W1_W2", "rrf_score",
+    ]
+    context = pd.read_csv(path, usecols=columns)
+    return (
+        context.sort_values(["consensus_rank", "source_id"], kind="mergesort")
+        .drop_duplicates("source_id")
+        .head(100)
+        .reset_index(drop=True)
+    )
 
 
 def _latest_audit_directory() -> Path:
@@ -477,91 +500,83 @@ def _save(fig: plt.Figure, output: Path) -> None:
 
 
 def _plot_pipeline(output: Path) -> None:
-    fig, ax = plt.subplots(figsize=(15.5, 4.6))
+    fig, ax = plt.subplots(figsize=(10.2, 8.0))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("#fbfdff")
     stages = [
-        ("1", "Labelled samples", "Known WR (Crowther)\nSIMBAD comparison"),
-        ("2", "Enrichment", "Gaia DR3 · 2MASS · AllWISE\nphotometry + astrometry"),
+        ("1", "Labelled samples", "Crowther WR catalogue\nControlled SIMBAD comparison"),
+        ("2", "Enrich sources", "Gaia DR3 · 2MASS · AllWISE\nPhotometry and astrometry"),
         (
             "3",
-            "Datasets + locus",
-            "8 strict/relaxed variants\n6-plane locus\nexclude if ≥2 planes fail",
+            "Variants + locus",
+            "8 compatible dataset variants\n6 intra-survey colour planes",
         ),
-        ("4", "Training", "144 configurations\nAP · top-K · low FPR"),
-        ("5", "Prediction pool", "broad colour query\nper-model filters"),
-        ("6", "Follow-up", "candidate ranking\nspectroscopic confirmation"),
+        ("4", "Train + validate", "144 configurations\nAP · top-K recovery · low FPR"),
+        ("5", "Score Gaia pool", "Versioned exact-union acquisition\nEligibility checked per model"),
+        ("6", "Follow-up review", "Five-model RRF ranking\nSpectroscopy confirms candidates"),
     ]
-    x_positions = np.linspace(0.105, 0.895, len(stages))
-    box_width = 0.132
-    box_y = 0.30
-    box_height = 0.40
+    positions = [(0.28, 0.74), (0.72, 0.74), (0.72, 0.49),
+                 (0.28, 0.49), (0.28, 0.24), (0.72, 0.24)]
+    card_width, card_height = 0.36, 0.175
 
     ax.text(
-        0.04,
-        0.91,
-        "Reproducible Wolf-Rayet candidate search pipeline",
+        0.07,
+        0.945,
+        "From catalogues to WR candidates",
         ha="left",
         va="center",
-        fontsize=17,
+        fontsize=20,
         weight="bold",
         color=INK,
     )
     ax.text(
-        0.04,
-        0.82,
-        "From labelled catalogues to a prioritized list for spectroscopic follow-up",
+        0.07,
+        0.897,
+        "Six reproducible stages; spectroscopic confirmation remains essential.",
         ha="left",
         va="center",
-        fontsize=10.5,
+        fontsize=11.5,
         color=MUTED,
     )
+    ax.scatter([0.91, 0.94, 0.89, 0.96], [0.94, 0.91, 0.89, 0.96],
+               s=[30, 13, 10, 17], marker="*", color="#d8e5f1", zorder=0)
 
-    for index in range(len(stages) - 1):
-        arrow = FancyArrowPatch(
-            (x_positions[index] + box_width / 2 + 0.002, box_y + box_height / 2),
-            (
-                x_positions[index + 1] - box_width / 2 - 0.002,
-                box_y + box_height / 2,
-            ),
-            arrowstyle="-|>",
-            mutation_scale=13,
-            linewidth=1.25,
-            color="#8c9caf",
-            zorder=4,
-        )
-        ax.add_patch(arrow)
+    arrow_segments = [
+        ((0.465, 0.74), (0.535, 0.74)),
+        ((0.72, 0.646), (0.72, 0.584)),
+        ((0.535, 0.49), (0.465, 0.49)),
+        ((0.28, 0.396), (0.28, 0.334)),
+        ((0.465, 0.24), (0.535, 0.24)),
+    ]
+    for start, end in arrow_segments:
+        ax.add_patch(FancyArrowPatch(
+            start, end, arrowstyle="-|>", mutation_scale=20,
+            linewidth=2, color="#7798ba", zorder=1,
+        ))
 
     for index, (number, title, detail) in enumerate(stages):
-        x = x_positions[index]
+        x, y = positions[index]
         is_output = index == len(stages) - 1
         accent = ORANGE if is_output else BLUE
-        face = "#fff4e8" if is_output else "#f5f8fc"
+        face = "#fff5ec" if is_output else "#f6f9fd"
         box = FancyBboxPatch(
-            (x - box_width / 2, box_y),
-            box_width,
-            box_height,
-            boxstyle="round,pad=0.010,rounding_size=0.018",
-            linewidth=1.15,
-            edgecolor=accent,
+            (x - card_width / 2, y - card_height / 2),
+            card_width,
+            card_height,
+            boxstyle="round,pad=0.006,rounding_size=0.014",
+            linewidth=1.35,
+            edgecolor="#e8b47f" if is_output else "#bfd1e5",
             facecolor=face,
             zorder=2,
         )
-        box.set_path_effects(
-            [
-                path_effects.SimplePatchShadow(
-                    offset=(1.2, -1.2), alpha=0.13, shadow_rgbFace="#526477"
-                ),
-                path_effects.Normal(),
-            ]
-        )
         ax.add_patch(box)
-
         number_box = FancyBboxPatch(
-            (x - box_width / 2 + 0.012, box_y + box_height - 0.064),
-            0.030,
-            0.038,
+            (x - card_width / 2 + 0.017, y + 0.035),
+            0.042,
+            0.041,
             boxstyle="round,pad=0.004,rounding_size=0.009",
             linewidth=0,
             facecolor=accent,
@@ -569,68 +584,67 @@ def _plot_pipeline(output: Path) -> None:
         )
         ax.add_patch(number_box)
         ax.text(
-            x - box_width / 2 + 0.027,
-            box_y + box_height - 0.045,
+            x - card_width / 2 + 0.038,
+            y + 0.055,
             number,
             ha="center",
             va="center",
-            fontsize=8.5,
+            fontsize=11,
             weight="bold",
             color="white",
             zorder=4,
         )
         ax.text(
-            x,
-            box_y + 0.245,
+            x - card_width / 2 + 0.076,
+            y + 0.054,
             title,
-            ha="center",
+            ha="left",
             va="center",
-            fontsize=10.5,
+            fontsize=13,
             weight="bold",
             color=INK,
             zorder=4,
         )
         ax.text(
-            x,
-            box_y + 0.115,
+            x - card_width / 2 + 0.022,
+            y - 0.035,
             detail,
-            ha="center",
+            ha="left",
             va="center",
-            fontsize=8.1,
+            fontsize=11.1,
             color=MUTED,
-            linespacing=1.35,
+            linespacing=1.45,
             zorder=4,
         )
 
     backbone = FancyBboxPatch(
-        (0.04, 0.075),
-        0.92,
-        0.105,
-        boxstyle="round,pad=0.010,rounding_size=0.018",
+        (0.095, 0.045),
+        0.81,
+        0.085,
+        boxstyle="round,pad=0.007,rounding_size=0.012",
         linewidth=0.8,
-        edgecolor="#c7d5e5",
-        facecolor="#edf4fb",
+        edgecolor="#d9e5f0",
+        facecolor="#eef4fa",
         zorder=1,
     )
     ax.add_patch(backbone)
     ax.text(
-        0.06,
-        0.128,
-        "Traceability",
-        ha="left",
+        0.50,
+        0.101,
+        "TRACEABILITY  ·  versioned configs  ·  source and model hashes",
+        ha="center",
         va="center",
-        fontsize=9.5,
+        fontsize=10.6,
         weight="bold",
         color=BLUE,
     )
     ax.text(
-        0.16,
-        0.128,
-        "versioned configurations  ·  snapshots and hashes  ·  DuckDB  ·  "
-        "run_id / result_id  ·  auditable artefacts",
-        ha="left",
+        0.50,
+        0.067,
+        "DuckDB lineage  ·  run/result IDs  ·  auditable artefacts",
+        ha="center",
         va="center",
-        fontsize=9,
+        fontsize=10.3,
         color=MUTED,
     )
 
@@ -1240,107 +1254,103 @@ def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
         return
 
     plot_data = data.sort_values("followup_rank").reset_index(drop=True)
-    rank_colors = [ORANGE, GOLD, BLUE, OLIVE, PINK]
+    context = evidence.candidate_context
+    if not context.empty:
+        context = context.loc[~context["source_id"].isin(plot_data["source_id"])]
 
-    fig = plt.figure(figsize=(13.2, 4.8))
-    sky_ax = fig.add_subplot(131, projection="mollweide")
-    cmd_ax = fig.add_subplot(132)
-    w12_ax = fig.add_subplot(133)
-
-    sky_markers = []
-    for index, row in plot_data.iterrows():
-        l_rad = np.deg2rad(((row["galactic_l"] + 180) % 360) - 180)
-        b_rad = np.deg2rad(row["galactic_b"])
-        marker = sky_ax.scatter(
-            [-l_rad],
-            [b_rad],
-            s=70,
-            marker="*",
-            c=rank_colors[index % len(rank_colors)],
-            edgecolors="white",
-            linewidths=1.2,
-            zorder=4,
-        )
-        sky_markers.append(marker)
-    sky_ax.grid(True, color="#c8d1dc", alpha=0.75)
-    sky_ax.set_xticklabels([])
-    sky_ax.set_title("Galactic sky", loc="left", fontsize=11)
-
-    for index, row in plot_data.iterrows():
-        cmd_ax.scatter(
-            row["BP_RP"],
-            row["G"],
-            s=70,
-            marker="*",
-            c=rank_colors[index % len(rank_colors)],
-            edgecolors="white",
-            linewidths=1.2,
-            zorder=4,
-        )
-        cmd_ax.annotate(
-            str(int(row["followup_rank"])),
-            (row["BP_RP"], row["G"]),
-            xytext=(5, 5),
-            textcoords="offset points",
-            fontsize=8,
-            weight="bold",
-            color=INK,
-        )
-    cmd_ax.invert_yaxis()
-    cmd_ax.margins(x=0.14, y=0.15)
-    cmd_ax.set_xlabel("BP - RP")
-    cmd_ax.set_ylabel("G")
-    cmd_ax.set_title("Gaia colour-magnitude", loc="left", fontsize=11)
-
-    for index, row in plot_data.iterrows():
-        w12_ax.scatter(
-            row["W1_W2"],
-            row["rrf_score"],
-            s=70,
-            marker="*",
-            c=rank_colors[index % len(rank_colors)],
-            edgecolors="white",
-            linewidths=1.2,
-            zorder=4,
-        )
-        w12_ax.annotate(
-            f"{int(row['followup_rank'])} ({int(row['model_support'])}/5)",
-            (row["W1_W2"], row["rrf_score"]),
-            xytext=(5, 5),
-            textcoords="offset points",
-            fontsize=8,
-            weight="bold",
-            color=INK,
-        )
-    w12_ax.set_xlabel("W1 - W2")
-    w12_ax.set_ylabel("RRF score")
-    w12_ax.set_title("Infrared excess vs consensus", loc="left", fontsize=11)
-    w12_ax.margins(x=0.14, y=0.15)
-
-    fig.suptitle(
-        "Top five candidates for spectroscopic follow-up",
-        x=0.07,
-        ha="left",
-        fontsize=13,
-        weight="bold",
+    fig = plt.figure(figsize=(10.4, 9.3), facecolor="white")
+    grid = fig.add_gridspec(
+        2, 2, left=0.09, right=0.96, top=0.76, bottom=0.20,
+        height_ratios=[1.08, 1], hspace=0.39, wspace=0.28,
     )
+    sky_ax = fig.add_subplot(grid[0, :], projection="mollweide")
+    cmd_ax = fig.add_subplot(grid[1, 0])
+    w12_ax = fig.add_subplot(grid[1, 1])
+
+    fig.text(0.07, 0.965, "Five priorities in the candidate landscape",
+             fontsize=18, weight="bold", color=INK, va="top")
+    fig.text(0.07, 0.92,
+             "Real consensus top-100 sources provide context for the five spectroscopic follow-ups."
+             if not context.empty else "Five spectroscopic follow-ups from the persisted candidate review.",
+             fontsize=11, color=MUTED, va="top")
+    legend_handles = [
+        Line2D([0], [0], marker="*", linestyle="", markersize=12,
+               markerfacecolor=ORANGE, markeredgecolor=INK,
+               label="Five follow-up priorities"),
+    ]
+    if not context.empty:
+        legend_handles.insert(
+            0, Line2D([0], [0], marker="o", linestyle="", markersize=6,
+                      markerfacecolor="#a9bbcc", markeredgecolor="none",
+                      label="Other top-100 sources"),
+        )
     fig.legend(
-        sky_markers,
-        [f"Rank {int(value)}" for value in plot_data["followup_rank"]],
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.06),
-        ncol=len(sky_markers),
-        frameon=False,
-        fontsize=8.5,
+        handles=legend_handles,
+        loc="upper left", bbox_to_anchor=(0.07, 0.875), ncol=2,
+        frameon=False, fontsize=10.5, handletextpad=0.5, columnspacing=1.8,
     )
-    fig.text(
-        0.07,
-        0.01,
-        "Galactic longitude increases left. Labels show follow-up rank; scores are not calibrated probabilities.",
-        color=MUTED,
-        fontsize=8.8,
-    )
-    fig.tight_layout(rect=[0, 0.13, 1, 0.94])
+
+    if not context.empty:
+        sky_context = context.dropna(subset=["galactic_l", "galactic_b"])
+        l_context = np.deg2rad(((sky_context["galactic_l"].to_numpy() + 180) % 360) - 180)
+        sky_ax.scatter(-l_context, np.deg2rad(sky_context["galactic_b"]),
+                       s=24, c="#a9bbcc", alpha=0.75, linewidths=0, zorder=2)
+        cmd_context = context.dropna(subset=["BP_RP", "G"])
+        cmd_ax.scatter(cmd_context["BP_RP"], cmd_context["G"],
+                       s=26, c="#a9bbcc", alpha=0.67, linewidths=0, zorder=2)
+        w12_context = context.dropna(subset=["W1_W2", "rrf_score"])
+        w12_ax.scatter(w12_context["W1_W2"], w12_context["rrf_score"],
+                       s=26, c="#a9bbcc", alpha=0.67, linewidths=0, zorder=2)
+
+    cmd_label_offsets = {
+        1: (-18, 8), 2: (7, -15), 3: (8, 9),
+        4: (7, 7), 5: (-19, -12),
+    }
+    for row in plot_data.itertuples(index=False):
+        l_rad = np.deg2rad(((row.galactic_l + 180) % 360) - 180)
+        sky_ax.scatter(-l_rad, np.deg2rad(row.galactic_b),
+                       s=165, marker="*", c=ORANGE, edgecolors=INK,
+                       linewidths=0.8, zorder=5)
+        for axis, x_value, y_value, label_offset in [
+            (cmd_ax, row.BP_RP, row.G,
+             cmd_label_offsets.get(int(row.followup_rank), (7, 6))),
+            (w12_ax, row.W1_W2, row.rrf_score, (7, 6)),
+        ]:
+            axis.scatter(x_value, y_value, s=155, marker="*", c=ORANGE,
+                         edgecolors=INK, linewidths=0.8, zorder=5)
+            axis.annotate(
+                str(int(row.followup_rank)), (x_value, y_value),
+                xytext=label_offset, textcoords="offset points", fontsize=10.5,
+                weight="bold", color=INK,
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.85, "pad": 0.8},
+                zorder=6,
+            )
+
+    sky_ax.grid(True, color="#d6e0e9", alpha=0.85, linewidth=0.75)
+    sky_ax.set_xticklabels([])
+    sky_ax.tick_params(axis="y", labelsize=9, colors=MUTED)
+    sky_ax.set_title("A  ·  Galactic sky", loc="left", fontsize=13, weight="bold", color=INK, pad=11)
+    for axis in (cmd_ax, w12_ax):
+        axis.grid(True, color=GRID, linewidth=0.8, zorder=0)
+        axis.tick_params(labelsize=9.5, colors=MUTED)
+        for spine in axis.spines.values():
+            spine.set_color("#a8b7c8")
+        axis.margins(x=0.08, y=0.12)
+    cmd_ax.invert_yaxis()
+    cmd_ax.set(xlabel="Gaia BP − RP (mag)", ylabel="Gaia G (mag)")
+    cmd_ax.set_title("B  ·  Gaia colour–magnitude", loc="left", fontsize=13,
+                     weight="bold", color=INK, pad=10)
+    w12_ax.set(xlabel="WISE W1 − W2 (mag)", ylabel="RRF score")
+    w12_ax.set_title("C  ·  Infrared colour and consensus", loc="left",
+                     fontsize=13, weight="bold", color=INK, pad=10)
+    fig.text(0.07, 0.105,
+             "Numbers are follow-up ranks. Galactic longitude increases left (l = 0° at centre).",
+             color=MUTED, fontsize=10.5)
+    fig.text(0.07, 0.070,
+             "Grey sources are the remaining consensus top 100; RRF scores are not calibrated probabilities."
+             if not evidence.candidate_context.empty else
+             "Top-100 context unavailable; RRF scores are not calibrated probabilities.",
+             color=MUTED, fontsize=10.5)
     _save(fig, output)
 
 
@@ -1442,7 +1452,7 @@ def write_source_notes(
         ),
         (
             f"| `{figures['top5'].name}` | Where do the five follow-up priorities sit on the sky and in colour space? "
-            "| Mollweide + CMD + W1-W2 support | `top_5_candidates.csv` |"
+            "| Mollweide + CMD + W1-W2 support | `top_5_candidates.csv` and consensus top 100 from `top_500_candidates.csv` |"
         ),
         "",
         "Palette policy: one blue root for context, orange for WR/focal results, "
