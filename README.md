@@ -4,7 +4,9 @@ Wolf-Rayet Search ranks Galactic Wolf-Rayet (WR) candidates from Gaia DR3, 2MASS
 
 ![Galactic distribution of the labelled reference and negative samples](reports/public/figures/sky_distribution.png)
 
-## Motivation
+*Known Wolf-Rayet stars concentrate near the Galactic plane; the negative sample spans a wider sky area. The map is a spatial diagnostic, not a probability map.*
+
+## Scientific motivation
 
 Catalogue construction, a physically constrained colour-locus, rare-object model selection and a Gaia-scale prediction pool are often treated separately. This project connects them into one reproducible workflow.
 
@@ -14,7 +16,7 @@ The output is a ranked candidate list for astronomical follow-up, not an automat
 
 Can a reproducible, auditable pipeline recover known Galactic WR stars and prioritize previously unconfirmed Gaia sources that merit spectroscopic confirmation?
 
-## Current status
+## Current research status
 
 The reference, negative-sample, colour-locus and modelling pipelines are implemented. The first Gaia-scale prediction pool was also built, but an independent audit found that its local `aggregated_mean_fit` filter does not retain every source accepted by at least one model-compatible dataset variant:
 
@@ -28,9 +30,15 @@ The existing 58,037,788-row pool is therefore registered as a read-only legacy b
 
 This research project began in 2024 and is being developed toward a scientific manuscript. The ranked candidate set has been shared with collaborating astronomers for archival-spectrum searches and spectral assessment. Until that review is complete, every listed source remains a candidate rather than a confirmed Wolf-Rayet star.
 
+![Five candidates prioritized for spectroscopic follow-up, shown on the Galactic sky, in a Gaia colour-magnitude diagram and against their infrared colour and consensus score](reports/public/figures/top5_candidates.png)
+
+*The five follow-up priorities come from the persisted equal-weight RRF consensus. The score ranks sources; it is not a calibrated probability of being a WR star.*
+
 ## Methodology
 
 ![Project pipeline overview](reports/public/figures/pipeline_overview.png)
+
+*Each stage writes auditable data or model artefacts. Spectroscopy remains the confirmation step.*
 
 The workflow has six phases:
 
@@ -50,6 +58,10 @@ broad acquisition envelope
 ```
 
 ## Data
+
+![Gaia and 2MASS colour-locus planes for the relaxed photometric sample](reports/public/figures/color_locus_relaxed.png)
+
+*Orange points are retained WR reference stars, pink crosses are WR outside the locus, and blue hexagons show the controlled negative sample. The fitted bands use colours measured within the same survey.*
 
 | Component | Definition |
 |---|---|
@@ -80,6 +92,7 @@ Large generated artefacts stay outside Git. The small, stable handoff material u
 | Optional reviewer bundle | `dist/wolf_rayet_search_review_bundle.zip` |
 
 Run IDs, dataset hashes, configuration hashes and source-level predictions keep comparisons tied to the data that produced them.
+Each candidate-review rebuild also retains a hash-named DuckDB snapshot under `reports/analysis/prediction_pool_candidates/_database_history/`; its manifest records the snapshot path and SHA-256. The configured database path remains the current Explorer view.
 
 ```text
 configs/                    Versioned pipeline and model configuration
@@ -97,7 +110,11 @@ reports/                    Local run artefacts; excluded from Git
 
 DuckDB is the canonical store for experiment history and pool metadata. Parquet is used for large source tables. Notebooks read those artefacts for inspection; they do not redefine filtering or training behaviour.
 
-## Models and experiments
+## Models / experiments
+
+![Average precision versus recall at 100 and selected model profiles from run_v3_main](reports/public/figures/model_performance.png)
+
+*The comparison uses holdout ranking metrics. The highlighted profiles illustrate different recovery, precision and stability trade-offs; no plotted score is a discovery claim.*
 
 The default sweep uses the eight `strict`/`relaxed` combinations with `photometry`, `parallax_soft`, `poe_2` and `poe_3`.
 
@@ -318,7 +335,7 @@ wr-detector score-prediction-pool `
 
 Repeat `--result-id` to apply more than one reviewed model. The scorer never selects a model automatically. It verifies the model hash, exact locus, variant bit, feature list and pool schema before inference; reads only completed acquisition tiles; and writes atomic, resumable score Parquet per model and tile. Sources compatible with the variant but missing a model feature are counted in the manifest and are not imputed.
 
-The canonical candidate application is `score_run_v3_main_top5_v1`. Its five explicit `result_id` values are stored in `configs/prediction_pool_candidates.yaml`; the scoring command must receive the same five values. After the full scoring audit passes, build and audit the reproducible candidate review:
+The frozen candidate-review application is `score_run_v3_main_top5_v1` (five-model ensemble, not a single "operative" model). Its five explicit `result_id` values are stored in `configs/prediction_pool_candidates.yaml`; the scoring command must receive the same five values. After the full scoring audit passes, build and audit the reproducible candidate review:
 
 ```powershell
 wr-detector build-prediction-pool-candidates `
@@ -341,19 +358,22 @@ wr-detector audit-prediction-pool-delivery `
 
 The review keeps the top 10,000 rows per model, uses equal-weight reciprocal rank fusion (`k=60`), enriches the top 500 with SIMBAD and Gaia diagnostics, and exports a 20-object review plus five follow-up priorities. Model scores remain ranking values, not calibrated probabilities. A missing SIMBAD match is not evidence that an object is previously unknown.
 
+**Primary ranking policy.** Recommendations, the Explorer consensus tables and the top-5 follow-up priorities are ordered by `consensus_rank` — the original equal-weight RRF order (`reciprocal_rank_consensus`). Stakeholder delivery CSVs are ordered by `eligibility_rank` (`rrf_score / eligible_model_count`), which normalizes for how many models could actually evaluate each source. Both columns are published side by side; neither formula is altered between views.
+
 The stakeholder delivery contains the complete 33,215-source union of the five per-model top-10,000 lists plus an exact top-100 truncation. It publishes both the original RRF rank and an eligibility-aware rank `rrf_score / eligible_model_count`. Every model contributes explicit status, eligibility reason, exact-locus/photometric-quality/astrometric decisions, original per-model rank and score. `ineligible_variant` has null rank/score, while `eligible_below_top_10000` passed every filter, retains its model score and has a null truncated rank. The package also contains the five hash-verified joblib files, a compact Spanish `metricas_modelos.csv`, five complete Model Detail screenshots and one Spanish `diccionario_columnas.csv` covering both delivered CSV schemas. Each joblib has a neighboring JSON with its fitted hyperparameters, training columns, exact locus planes, photometric/astrometric restrictions, validation summary and hashes. Only the six YAML files required to reproduce training, pool construction, scoring and ranking are included. README/guide files, delivery manifests, duplicate technical tables, standalone PR images and the physical tile inventory are deliberately omitted. All delivered paths are package-relative; local usernames and workspace paths are not exported.
 
 Do not delete the legacy DuckDB or its 675 Parquet tiles. Do not run the non-dry-run legacy builder. The production prediction-pool configuration was opened only after the Gaia smoke validated the final query columns, measured storage, checksums, manifests and resume behavior.
 
 ### Audit notebooks
 
-Three compact notebooks document the scientific checks in pipeline order:
+Four compact notebooks document the scientific checks in pipeline order:
 
 - `01_reference_and_color_locus.ipynb`: catalogue provenance, negative composition, photometric retention and the signed-log colour-locus decision;
 - `02_model_selection_and_validation.ipynb`: split policy, ranking metrics, leading model trade-offs, curves, feature importance and second-layer scope;
-- `03_prediction_pool_status.ipynb`: legacy-filter failure, replacement-pool architecture, live build snapshot and the path to definitive scoring.
+- `03_prediction_pool_status.ipynb`: legacy-filter failure, replacement-pool architecture, live build snapshot and the path to definitive scoring;
+- `04_prediction_pool_candidate_audit.ipynb`: executed five-model consensus, SIMBAD/Gaia enrichment, top-20 review and top-5 follow-up priorities.
 
-They are executed audit artefacts, not sources of pipeline logic. Rebuild all three with:
+They are executed audit artefacts, not sources of pipeline logic. Rebuild all four with:
 
 ```powershell
 python -m wr_detector.reporting.review_notebooks --execute
@@ -372,7 +392,7 @@ python -m compileall src\wr_detector
 - **Incomplete labels.** Unknown Gaia sources are not confirmed negatives. The pool therefore produces candidates for review rather than a calibrated scientific precision estimate.
 - **Negative-sample bias.** SIMBAD represents selected, previously catalogued classes. `threshold_calibration` strengthens the stress test but does not reproduce the full Gaia distribution.
 - **Crossmatch and coverage dependence.** The reference allows VizieR fallback; the pool uses Gaia crossmatch paths. Provenance differences stay explicit and must be audited when spectra are added.
-- **Operative model not frozen.** Leading profiles trade off AP, recovery, purity and stability. Final selection must fix a follow-up budget and be repeated on the completed exact-union pool.
+- **No single operative model frozen.** The frozen artefact is the five-model candidate-review ensemble (`score_run_v3_main_top5_v1`), not one champion estimator. Leading profiles trade off AP, recovery, purity and stability; a single-model selection must still fix a follow-up budget and be repeated on the completed exact-union pool.
 
 ## References
 
@@ -383,31 +403,4 @@ python -m compileall src\wr_detector
 - Skrutskie, M. F. et al. (2006). The Two Micron All Sky Survey (2MASS). *AJ* 131, 1163–1183. https://doi.org/10.1086/498708
 - Wright, E. L. et al. (2010). The Wide-field Infrared Survey Explorer (WISE). *AJ* 140, 1868–1881. https://doi.org/10.1088/0004-6256/140/6/1868
 
-## License
-
-The source code and original project documentation in this repository are licensed under the MIT License. See [LICENSE](LICENSE).
-
-This license applies only to original material contained in this repository. Astronomical catalogues and externally sourced data remain subject to their respective licenses, terms of use, and citation requirements.
-
-This project currently makes use of data and services including:
-
-- ESA Gaia / Gaia DPAC (Gaia DR3)
-- 2MASS
-- WISE / AllWISE
-- SIMBAD
-- VizieR
-- Galactic Wolf-Rayet catalogues and associated publications
-
-Users of this project are responsible for complying with the citation and attribution requirements of the original data providers.
-
-## Citation
-
-If you use this repository, please cite it with the metadata in [CITATION.cff](CITATION.cff) together with the relevant data and method references listed above.
-
-## Research status
-
-This repository contains ongoing research.
-
-The methodology, model selection, prediction pool, candidate rankings, and scientific conclusions may change as the project develops.
-
-Outputs produced by the current pipeline should not be interpreted as confirmed discoveries of Wolf-Rayet stars without independent astronomical validation and follow-up observations.
+The original code and documentation are under the [MIT License](LICENSE); external catalogues retain their own terms and citation requirements. If you use the repository, cite [CITATION.cff](CITATION.cff) alongside the relevant data and method references above.

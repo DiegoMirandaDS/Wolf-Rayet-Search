@@ -28,8 +28,46 @@ def render() -> None:
             st.json(availability)
         return
 
-    pool_runs, tiles = data.pool_status()
-    scoring_runs, scored_models = data.scoring_status()
+    configured_pool = data.configured_pool_build_id()
+    configured_scoring = data.configured_scoring_run_id()
+    pool_options = data.available_pool_build_ids()
+    scoring_options = data.available_scoring_run_ids()
+    pool_labels = {
+        value: (
+            f"{value} (configured)"
+            if configured_pool and value == configured_pool
+            else f"{value} (historical)"
+        )
+        for value in pool_options
+    }
+    scoring_labels = {
+        value: (
+            f"{value} (configured)"
+            if configured_scoring and value == configured_scoring
+            else f"{value} (historical)"
+        )
+        for value in scoring_options
+    }
+    controls = st.columns([1.4, 1.4])
+    with controls[0]:
+        selected_pool = st.selectbox(
+            "Pool build",
+            options=pool_options,
+            format_func=lambda value: pool_labels.get(value, value),
+            index=0,
+            help="Configured operational build first; historical builds are selectable but never mixed.",
+        )
+    with controls[1]:
+        selected_scoring = st.selectbox(
+            "Scoring run",
+            options=scoring_options,
+            format_func=lambda value: scoring_labels.get(value, value),
+            index=0,
+            help="Configured operational scoring run first; historical runs are selectable but never mixed.",
+        )
+
+    pool_runs, tiles = data.pool_status(selected_pool)
+    scoring_runs, scored_models = data.scoring_status(selected_scoring)
     review_runs = data.candidate_review_runs()
     summary = data.candidate_summary()
     dispositions = data.candidate_dispositions()
@@ -40,6 +78,21 @@ def render() -> None:
 
     pool = pool_runs.iloc[0]
     scoring = scoring_runs.iloc[0]
+    operational_pool = bool(configured_pool) and str(pool.get("pool_build_id", "")) == str(configured_pool)
+    operational_scoring = (
+        bool(configured_scoring)
+        and str(scoring.get("scoring_run_id", "")) == str(configured_scoring)
+    )
+    scope_caption = (
+        "Operational scope: configured pool build and scoring run. "
+        "Historical selections above replace the operational view for this session."
+    )
+    if not operational_pool or not operational_scoring:
+        scope_caption = (
+            "Historical scope selected. Candidate-review summary and model "
+            "metrics below still reflect the configured operational review."
+        )
+    st.caption(scope_caption)
     ui.kpi_row(
         [
             (

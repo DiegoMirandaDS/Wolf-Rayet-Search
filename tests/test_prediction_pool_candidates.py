@@ -13,6 +13,7 @@ from wr_detector.pipelines.prediction_pool_candidates import (
     classify_simbad_match,
     eligibility_aware_consensus,
     _normalize_exact_simbad,
+    _write_review_database,
     reciprocal_rank_consensus,
 )
 
@@ -201,7 +202,7 @@ def test_candidate_review_builds_auditable_outputs(tmp_path: Path):
         )
         recommended = con.execute(
             """
-            SELECT source_id
+            SELECT source_id, followup_rank, consensus_rank
             FROM candidate_recommendations
             ORDER BY followup_rank
             """
@@ -211,6 +212,30 @@ def test_candidate_review_builds_auditable_outputs(tmp_path: Path):
     assert dispositions[3] == "emission_or_ambiguous"
     assert dispositions[4] == "no_exact_match"
     assert {row[0] for row in recommended}.issubset({3, 4})
+    assert recommended == sorted(recommended, key=lambda row: row[1])
+    assert [row[2] for row in recommended] == sorted(row[2] for row in recommended)
+
+
+def test_candidate_review_database_preserves_previous_runs(tmp_path: Path):
+    db_path = tmp_path / "current.duckdb"
+    history_dir = tmp_path / "history"
+    first = _write_review_database(
+        db_path,
+        {"candidate_review_runs": pd.DataFrame({"review_run_id": ["first"]})},
+        history_dir=history_dir,
+    )
+    second = _write_review_database(
+        db_path,
+        {"candidate_review_runs": pd.DataFrame({"review_run_id": ["second"]})},
+        history_dir=history_dir,
+    )
+
+    assert first != second
+    assert sorted(history_dir.glob("*.duckdb")) == sorted([first, second])
+    with duckdb.connect(str(first), read_only=True) as con:
+        assert con.execute("SELECT review_run_id FROM candidate_review_runs").fetchone() == ("first",)
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        assert con.execute("SELECT review_run_id FROM candidate_review_runs").fetchone() == ("second",)
 
 
 def _candidate_fixture(tmp_path: Path) -> dict[str, Path]:

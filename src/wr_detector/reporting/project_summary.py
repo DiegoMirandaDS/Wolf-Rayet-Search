@@ -36,6 +36,9 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 from wr_detector.features import fit_log_color_locus, inverse_transform_color_values
 from wr_detector.modeling.explorer import load_run_results, rank_models
 from wr_detector.pipelines.prediction_pool import make_sky_tiles
+from wr_detector.pipelines.prediction_pool_exact_union import (
+    ensure_exact_union_builds_status,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -356,6 +359,7 @@ def _prediction_pool_status() -> dict[str, Any]:
             "parquet_bytes": 0,
             "estimated_rows": 154_000_000,
         }
+    ensure_exact_union_builds_status(db_path)
     with duckdb.connect(str(db_path), read_only=True) as con:
         tables = set(con.execute("SHOW TABLES").fetchdf()["name"])
         if "exact_union_tiles" not in tables:
@@ -928,8 +932,8 @@ def _plot_model_performance(evidence: Evidence, output: Path) -> None:
             s=140,
             marker=marker,
             c=GOLD,
-            edgecolors=INK,
-            linewidths=1.0,
+            edgecolors="white",
+            linewidths=1.2,
             zorder=5,
         )
         axes[0].annotate(
@@ -1238,35 +1242,29 @@ def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
     plot_data = data.sort_values("followup_rank").reset_index(drop=True)
     rank_colors = [ORANGE, GOLD, BLUE, OLIVE, PINK]
 
-    fig = plt.figure(figsize=(13.2, 4.4))
+    fig = plt.figure(figsize=(13.2, 4.8))
     sky_ax = fig.add_subplot(131, projection="mollweide")
     cmd_ax = fig.add_subplot(132)
     w12_ax = fig.add_subplot(133)
 
+    sky_markers = []
     for index, row in plot_data.iterrows():
         l_rad = np.deg2rad(((row["galactic_l"] + 180) % 360) - 180)
         b_rad = np.deg2rad(row["galactic_b"])
-        sky_ax.scatter(
+        marker = sky_ax.scatter(
             [-l_rad],
             [b_rad],
             s=70,
             marker="*",
             c=rank_colors[index % len(rank_colors)],
-            edgecolors=INK,
-            linewidths=0.7,
+            edgecolors="white",
+            linewidths=1.2,
             zorder=4,
         )
-        sky_ax.annotate(
-            str(int(row["followup_rank"])),
-            (-l_rad, b_rad),
-            xytext=(5, 5),
-            textcoords="offset points",
-            fontsize=8,
-            weight="bold",
-            color=INK,
-        )
+        sky_markers.append(marker)
     sky_ax.grid(True, color="#c8d1dc", alpha=0.75)
-    sky_ax.set_title("Sky position", loc="left", fontsize=11)
+    sky_ax.set_xticklabels([])
+    sky_ax.set_title("Galactic sky", loc="left", fontsize=11)
 
     for index, row in plot_data.iterrows():
         cmd_ax.scatter(
@@ -1275,8 +1273,8 @@ def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
             s=70,
             marker="*",
             c=rank_colors[index % len(rank_colors)],
-            edgecolors=INK,
-            linewidths=0.7,
+            edgecolors="white",
+            linewidths=1.2,
             zorder=4,
         )
         cmd_ax.annotate(
@@ -1289,6 +1287,7 @@ def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
             color=INK,
         )
     cmd_ax.invert_yaxis()
+    cmd_ax.margins(x=0.14, y=0.15)
     cmd_ax.set_xlabel("BP - RP")
     cmd_ax.set_ylabel("G")
     cmd_ax.set_title("Gaia colour-magnitude", loc="left", fontsize=11)
@@ -1300,8 +1299,8 @@ def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
             s=70,
             marker="*",
             c=rank_colors[index % len(rank_colors)],
-            edgecolors=INK,
-            linewidths=0.7,
+            edgecolors="white",
+            linewidths=1.2,
             zorder=4,
         )
         w12_ax.annotate(
@@ -1316,22 +1315,32 @@ def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
     w12_ax.set_xlabel("W1 - W2")
     w12_ax.set_ylabel("RRF score")
     w12_ax.set_title("Infrared excess vs consensus", loc="left", fontsize=11)
+    w12_ax.margins(x=0.14, y=0.15)
 
     fig.suptitle(
-        "Top-5 follow-up priorities (candidate_review consensus)",
+        "Top five candidates for spectroscopic follow-up",
         x=0.07,
         ha="left",
         fontsize=13,
         weight="bold",
     )
+    fig.legend(
+        sky_markers,
+        [f"Rank {int(value)}" for value in plot_data["followup_rank"]],
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.06),
+        ncol=len(sky_markers),
+        frameon=False,
+        fontsize=8.5,
+    )
     fig.text(
         0.07,
-        0.015,
-        "Markers are ranked candidates 1-5. Scores are ranking values, not calibrated probabilities.",
+        0.01,
+        "Galactic longitude increases left. Labels show follow-up rank; scores are not calibrated probabilities.",
         color=MUTED,
         fontsize=8.8,
     )
-    fig.tight_layout(rect=[0, 0.05, 1, 0.94])
+    fig.tight_layout(rect=[0, 0.13, 1, 0.94])
     _save(fig, output)
 
 

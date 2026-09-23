@@ -4,6 +4,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pytest
 
 from wr_detector.pipelines.exact_variant_union import (
     ExactLocus,
@@ -14,6 +15,7 @@ from wr_detector.pipelines.prediction_pool import BASE_COLUMNS, SkyTile
 from wr_detector.pipelines.prediction_pool_exact_union import (
     completed_tile_is_valid,
     deduplicate_tmass_crossmatches,
+    ensure_exact_union_builds_status,
     finalize_exact_union_build_status,
     initialize_exact_union_database,
     persist_acquisition_tile,
@@ -21,6 +23,180 @@ from wr_detector.pipelines.prediction_pool_exact_union import (
     refresh_exact_union_views,
     register_completed_tile,
 )
+
+
+def test_ensure_exact_union_builds_status_migrates_old_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "pool.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            CREATE TABLE exact_union_builds (
+                pool_build_id VARCHAR PRIMARY KEY,
+                config_path VARCHAR,
+                envelope_sha256 VARCHAR,
+                bitmask_schema_version VARCHAR,
+                bitmask_schema_sha256 VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE exact_union_tiles (
+                pool_build_id VARCHAR,
+                tile_id VARCHAR,
+                status VARCHAR,
+                PRIMARY KEY (pool_build_id, tile_id)
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO exact_union_builds VALUES (
+                'pool', 'cfg', 'env', 'v1', 'bits',
+                TIMESTAMP '2026-07-27', TIMESTAMP '2026-07-27'
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO exact_union_tiles VALUES
+                ('pool', 'tile_a', 'completed'),
+                ('pool', 'tile_b', 'completed')
+            """
+        )
+        with pytest.raises(Exception, match="status"):
+            con.execute("SELECT status FROM exact_union_builds")
+
+    migrated = ensure_exact_union_builds_status(
+        db_path,
+        expected_tile_ids=["tile_a", "tile_b"],
+    )
+    assert migrated is True
+
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        columns = {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'exact_union_builds'
+                """
+            ).fetchall()
+        }
+        assert "status" in columns
+        row = con.execute(
+            "SELECT status FROM exact_union_builds WHERE pool_build_id='pool'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "completed"
+
+    assert ensure_exact_union_builds_status(
+        db_path,
+        expected_tile_ids=["tile_a", "tile_b"],
+    ) is False
+
+
+def test_ensure_exact_union_builds_status_marks_incomplete_partial(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "pool.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            CREATE TABLE exact_union_builds (
+                pool_build_id VARCHAR PRIMARY KEY,
+                config_path VARCHAR,
+                envelope_sha256 VARCHAR,
+                bitmask_schema_version VARCHAR,
+                bitmask_schema_sha256 VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE exact_union_tiles (
+                pool_build_id VARCHAR,
+                tile_id VARCHAR,
+                status VARCHAR,
+                PRIMARY KEY (pool_build_id, tile_id)
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO exact_union_builds VALUES (
+                'pool', 'cfg', 'env', 'v1', 'bits',
+                TIMESTAMP '2026-07-27', TIMESTAMP '2026-07-27'
+            )
+            """
+        )
+        con.execute(
+            "INSERT INTO exact_union_tiles VALUES ('pool', 'tile_a', 'completed')"
+        )
+
+    ensure_exact_union_builds_status(
+        db_path,
+        expected_tile_ids=["tile_a", "tile_b"],
+    )
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        row = con.execute(
+            "SELECT status FROM exact_union_builds WHERE pool_build_id='pool'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "partial"
+
+
+def test_initialize_exact_union_database_on_old_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "pool.duckdb"
+    with duckdb.connect(str(db_path)) as con:
+        con.execute(
+            """
+            CREATE TABLE exact_union_builds (
+                pool_build_id VARCHAR PRIMARY KEY,
+                config_path VARCHAR,
+                envelope_sha256 VARCHAR,
+                bitmask_schema_version VARCHAR,
+                bitmask_schema_sha256 VARCHAR,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        with pytest.raises(Exception, match="status"):
+            con.execute("SELECT status FROM exact_union_builds")
+
+    loci = _loci()
+    initialize_exact_union_database(
+        db_path,
+        pool_build_id="pool",
+        config_path=Path("configs/prediction_pool.yaml"),
+        envelope={"sha256": "env"},
+        coverage={"rows": 0},
+        schema=build_variant_mask_schema(list(loci)),
+        loci=loci,
+    )
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        columns = {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'exact_union_builds'
+                """
+            ).fetchall()
+        }
+        assert "status" in columns
+        row = con.execute(
+            "SELECT status FROM exact_union_builds WHERE pool_build_id='pool'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "running"
 
 
 def _raw_acquisition() -> pd.DataFrame:

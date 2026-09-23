@@ -27,6 +27,7 @@ from wr_detector.modeling.candidate_stacks import (
 from wr_detector.modeling.layers import VALIDATION_LAYERS, list_layer_runs, load_layer_results
 from wr_detector.modeling import prediction_pool_review as pool_review
 from wr_detector.modeling.explorer import (
+    enrich_model_results,
     list_explorer_runs,
     load_feature_importance,
     load_prediction_summary,
@@ -39,7 +40,7 @@ def config_path() -> str:
 
 
 def run_id() -> str:
-    return st.session_state["run_id"]
+    return str(st.session_state.get("run_id", "") or "")
 
 
 def candidate_config_path() -> str:
@@ -54,7 +55,10 @@ def runs() -> pd.DataFrame:
 
 
 def results() -> pd.DataFrame:
-    return _results(config_path(), run_id())
+    run = run_id()
+    if not run:
+        return _empty_results()
+    return _results(config_path(), run)
 
 
 def feature_importance(result_id: str) -> pd.DataFrame:
@@ -166,12 +170,36 @@ def candidate_review_runs() -> pd.DataFrame:
     )
 
 
-def pool_status() -> tuple[pd.DataFrame, pd.DataFrame]:
-    return _pool_status(candidate_config_path(), _candidate_revision())
+def configured_pool_build_id() -> str | None:
+    return pool_review.configured_pool_build_id(candidate_config_path())
 
 
-def scoring_status() -> tuple[pd.DataFrame, pd.DataFrame]:
-    return _scoring_status(candidate_config_path(), _candidate_revision())
+def configured_scoring_run_id() -> str | None:
+    return pool_review.configured_scoring_run_id(candidate_config_path())
+
+
+def available_pool_build_ids() -> list[str]:
+    return _available_pool_build_ids(candidate_config_path(), _candidate_revision())
+
+
+def available_scoring_run_ids() -> list[str]:
+    return _available_scoring_run_ids(candidate_config_path(), _candidate_revision())
+
+
+def pool_status(pool_build_id: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return _pool_status(
+        candidate_config_path(),
+        _candidate_revision(),
+        pool_build_id or "",
+    )
+
+
+def scoring_status(scoring_run_id: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return _scoring_status(
+        candidate_config_path(),
+        _candidate_revision(),
+        scoring_run_id or "",
+    )
 
 
 def candidate_models() -> pd.DataFrame:
@@ -330,19 +358,37 @@ def _candidate_review_runs(
 
 
 @st.cache_data(show_spinner=False)
+def _available_pool_build_ids(config: str, revision: str) -> list[str]:
+    return pool_review.available_pool_build_ids(config)
+
+
+@st.cache_data(show_spinner=False)
+def _available_scoring_run_ids(config: str, revision: str) -> list[str]:
+    return pool_review.available_scoring_run_ids(config)
+
+
+@st.cache_data(show_spinner=False)
 def _pool_status(
     config: str,
     revision: str,
+    pool_build_id: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    return pool_review.load_pool_status(config)
+    return pool_review.load_pool_status(
+        config,
+        pool_build_id=pool_build_id or None,
+    )
 
 
 @st.cache_data(show_spinner=False)
 def _scoring_status(
     config: str,
     revision: str,
+    scoring_run_id: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    return pool_review.load_scoring_status(config)
+    return pool_review.load_scoring_status(
+        config,
+        scoring_run_id=scoring_run_id or None,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -448,6 +494,10 @@ def _runs(config: str) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def _results(config: str, run: str) -> pd.DataFrame:
     return load_run_results(config, run_id=run)
+
+
+def _empty_results() -> pd.DataFrame:
+    return enrich_model_results(pd.DataFrame())
 
 
 @st.cache_data(show_spinner=False)

@@ -37,35 +37,23 @@ def main() -> None:
     st.session_state["candidate_config_path"] = str(args.candidate_config)
 
     runs = data.runs()
-    model_pages = [
-        st.Page(overview.render, title="Overview", icon=":material/dashboard:", url_path="overview", default=True),
-        st.Page(compare.render, title="Compare models", icon=":material/leaderboard:", url_path="compare"),
-        st.Page(model_detail.render, title="Model detail", icon=":material/query_stats:", url_path="model"),
-        st.Page(cases_page.render, title="Case review", icon=":material/travel_explore:", url_path="cases"),
-        st.Page(stats_page.render, title="Statistics", icon=":material/insights:", url_path="stats"),
-    ]
-    validation_pages = [
-        st.Page(layers_page.render, title="Validation layers", icon=":material/layers:", url_path="layers"),
-        st.Page(
-            candidate_stack_page.render,
-            title="Candidate stack",
-            icon=":material/account_tree:",
-            url_path="candidate-stack",
-        ),
-    ]
+    has_runs = not runs.empty
+
     candidate_review_navigation = st.Page(
         candidate_review_page.render,
         title="Candidate review",
         icon=":material/find_in_page:",
         url_path="candidate-review",
     )
+    pool_status_page_spec = st.Page(
+        pool_status_page.render,
+        title="Pool status",
+        icon=":material/database:",
+        url_path="pool-status",
+        default=not has_runs,
+    )
     prediction_pool_pages = [
-        st.Page(
-            pool_status_page.render,
-            title="Pool status",
-            icon=":material/database:",
-            url_path="pool-status",
-        ),
+        pool_status_page_spec,
         st.Page(
             candidate_rankings_page.render,
             title="Candidate rankings",
@@ -74,20 +62,45 @@ def main() -> None:
         ),
         candidate_review_navigation,
     ]
+
+    sections: dict[str, list[st.Page]] = {}
+    if has_runs:
+        sections["Models"] = [
+            st.Page(
+                overview.render,
+                title="Overview",
+                icon=":material/dashboard:",
+                url_path="overview",
+                default=True,
+            ),
+            st.Page(compare.render, title="Compare models", icon=":material/leaderboard:", url_path="compare"),
+            st.Page(model_detail.render, title="Model detail", icon=":material/query_stats:", url_path="model"),
+            st.Page(cases_page.render, title="Case review", icon=":material/travel_explore:", url_path="cases"),
+            st.Page(stats_page.render, title="Statistics", icon=":material/insights:", url_path="stats"),
+        ]
+        sections["Validation / second layer"] = [
+            st.Page(layers_page.render, title="Validation layers", icon=":material/layers:", url_path="layers"),
+            st.Page(
+                candidate_stack_page.render,
+                title="Candidate stack",
+                icon=":material/account_tree:",
+                url_path="candidate-stack",
+            ),
+        ]
+    else:
+        sections["Validation / second layer"] = [
+            st.Page(layers_page.render, title="Validation layers", icon=":material/layers:", url_path="layers"),
+        ]
+    sections["Prediction pool"] = prediction_pool_pages
+
     st.session_state["_candidate_review_page"] = candidate_review_navigation
-    navigation = st.navigation(
-        {
-            "Models": model_pages,
-            "Validation / second layer": validation_pages,
-            "Prediction pool": prediction_pool_pages,
-        },
-        expanded=True,
-    )
+    navigation = st.navigation(sections, expanded=True)
 
     with st.sidebar:
-        if runs.empty:
+        if not has_runs:
             st.error("No training runs found in the configured DuckDB history.")
             st.session_state["run_id"] = ""
+            st.caption("Model pages are hidden until a training run is available.")
         else:
             labels = {
                 row.run_id: f"{row.run_id} | {int(row.row_count)} models"

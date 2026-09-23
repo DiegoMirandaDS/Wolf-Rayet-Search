@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import shutil
 from typing import Any, Callable, Iterable, Mapping
 
 import duckdb
@@ -631,7 +632,7 @@ def build_prediction_pool_candidates(
             }
         ]
     )
-    _write_review_database(
+    database_snapshot_path = _write_review_database(
         output_db,
         {
             "candidate_review_runs": run_row,
@@ -644,6 +645,7 @@ def build_prediction_pool_candidates(
             "candidate_review": review_frame,
             "candidate_recommendations": recommendations,
         },
+        history_dir=output_root / "_database_history",
     )
 
     export_paths = _write_exports(
@@ -685,6 +687,8 @@ def build_prediction_pool_candidates(
         ),
         "simbad_snapshot_sha256": simbad_snapshot_sha256,
         "database_path": str(output_db),
+        "database_snapshot_path": str(database_snapshot_path),
+        "database_sha256": file_sha256(database_snapshot_path),
         "exports": export_paths,
         "written_at": datetime.now(UTC).isoformat(),
     }
@@ -1317,7 +1321,10 @@ def _empty_simbad_matches(candidates: pd.DataFrame) -> pd.DataFrame:
 def _write_review_database(
     db_path: Path,
     tables: Mapping[str, pd.DataFrame],
-) -> None:
+    *,
+    history_dir: Path,
+) -> Path:
+    """Publish the current review while retaining every database revision by hash."""
     temporary = db_path.with_suffix(db_path.suffix + ".tmp")
     temporary.unlink(missing_ok=True)
     with duckdb.connect(str(temporary)) as con:
@@ -1325,7 +1332,28 @@ def _write_review_database(
             con.register("incoming", frame)
             con.execute(f"CREATE TABLE {name} AS SELECT * FROM incoming")
             con.unregister("incoming")
+    history_dir.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        _archive_review_database(db_path, history_dir)
+    snapshot = _archive_review_database(temporary, history_dir)
     temporary.replace(db_path)
+    return snapshot
+
+
+def _archive_review_database(source: Path, history_dir: Path) -> Path:
+    digest = file_sha256(source)
+    snapshot = history_dir / f"{digest}.duckdb"
+    if snapshot.exists():
+        if file_sha256(snapshot) != digest:
+            raise ValueError(f"Candidate-review archive is corrupt: {snapshot}")
+        return snapshot
+    temporary = history_dir / f".{digest}.tmp.duckdb"
+    shutil.copy2(source, temporary)
+    if file_sha256(temporary) != digest:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"Candidate-review archive copy failed: {source}")
+    temporary.replace(snapshot)
+    return snapshot
 
 
 def _write_exports(

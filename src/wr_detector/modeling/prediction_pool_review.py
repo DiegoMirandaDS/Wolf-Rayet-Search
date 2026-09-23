@@ -84,6 +84,95 @@ def review_availability(
     }
 
 
+def configured_pool_build_id(
+    config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+) -> str | None:
+    paths = prediction_pool_review_paths(config_path)
+    pool = load_yaml(paths.pool_config)
+    value = (pool.get("build") or {}).get("pool_build_id")
+    return str(value) if value else None
+
+
+def configured_scoring_run_id(
+    config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+) -> str | None:
+    candidate = load_yaml(resolve_path(config_path))
+    value = (candidate.get("review") or {}).get("scoring_run_id")
+    return str(value) if value else None
+
+
+def configured_model_run_id(
+    config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+) -> str | None:
+    candidate = load_yaml(resolve_path(config_path))
+    value = (candidate.get("review") or {}).get("model_run_id")
+    return str(value) if value else None
+
+
+def configured_review_run_id(
+    config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+) -> str | None:
+    candidate = load_yaml(resolve_path(config_path))
+    value = (candidate.get("review") or {}).get("review_run_id")
+    return str(value) if value else None
+
+
+def available_pool_build_ids(
+    config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+) -> list[str]:
+    """Configured operational build first, then any other registered builds."""
+    paths = prediction_pool_review_paths(config_path)
+    configured = configured_pool_build_id(config_path)
+    if not paths.pool_db.exists():
+        return [configured] if configured else []
+    with _connect(paths.pool_db) as con:
+        if not _table_exists(con, "exact_union_builds"):
+            return [configured] if configured else []
+        rows = con.execute(
+            """
+            SELECT DISTINCT pool_build_id
+            FROM exact_union_builds
+            ORDER BY pool_build_id
+            """
+        ).fetchall()
+    ids = [str(row[0]) for row in rows]
+    ordered: list[str] = []
+    if configured and configured in ids:
+        ordered.append(configured)
+    elif configured:
+        ordered.append(configured)
+    ordered.extend(value for value in ids if value != configured)
+    return ordered
+
+
+def available_scoring_run_ids(
+    config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+) -> list[str]:
+    """Configured operational scoring run first, then any other registered runs."""
+    paths = prediction_pool_review_paths(config_path)
+    configured = configured_scoring_run_id(config_path)
+    if not paths.scoring_db.exists():
+        return [configured] if configured else []
+    with _connect(paths.scoring_db) as con:
+        if not _table_exists(con, "prediction_scoring_runs"):
+            return [configured] if configured else []
+        rows = con.execute(
+            """
+            SELECT DISTINCT scoring_run_id
+            FROM prediction_scoring_runs
+            ORDER BY scoring_run_id
+            """
+        ).fetchall()
+    ids = [str(row[0]) for row in rows]
+    ordered: list[str] = []
+    if configured and configured in ids:
+        ordered.append(configured)
+    elif configured:
+        ordered.append(configured)
+    ordered.extend(value for value in ids if value != configured)
+    return ordered
+
+
 def load_candidate_review_runs(
     config_path: str | Path = "configs/prediction_pool_candidates.yaml",
 ) -> pd.DataFrame:
@@ -104,8 +193,21 @@ def load_candidate_review_runs(
 
 def load_pool_status(
     config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+    *,
+    pool_build_id: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load one pool build only; defaults to the configured operational build.
+
+    Historical builds are never mixed into the returned frames. Pass an
+    explicit ``pool_build_id`` from :func:`available_pool_build_ids` to inspect
+    a non-operational build.
+    """
     paths = prediction_pool_review_paths(config_path)
+    selected = (
+        str(pool_build_id)
+        if pool_build_id is not None
+        else configured_pool_build_id(config_path)
+    )
     if not paths.pool_db.exists():
         return pd.DataFrame(), pd.DataFrame()
     with _connect(paths.pool_db) as con:
@@ -114,11 +216,17 @@ def load_pool_status(
             "exact_union_tiles",
         }.issubset(_tables(con)):
             return pd.DataFrame(), pd.DataFrame()
+        # Older resumable pools predate the build-level status column. Keep
+        # Explorer reads side-effect free; the build/audit CLI owns migration.
+        build_status = (
+            "b.status" if "status" in _columns(con, "exact_union_builds")
+            else "'legacy_schema'::VARCHAR AS status"
+        )
         summary = con.execute(
-            """
+            f"""
             SELECT
                 b.pool_build_id,
-                b.status,
+                {build_status},
                 b.envelope_sha256,
                 b.bitmask_schema_version,
                 b.bitmask_schema_sha256,
@@ -133,9 +241,11 @@ def load_pool_status(
                 SUM(t.parquet_bytes) AS parquet_bytes
             FROM exact_union_builds b
             JOIN exact_union_tiles t USING (pool_build_id)
+            WHERE (? IS NULL OR b.pool_build_id = ?)
             GROUP BY ALL
             ORDER BY b.updated_at DESC
-            """
+            """,
+            [selected, selected],
         ).fetchdf()
         tiles = con.execute(
             """
@@ -143,8 +253,10 @@ def load_pool_status(
                    status, acquired_pre_locus, accepted_union,
                    known_excluded, written, parquet_bytes, updated_at
             FROM exact_union_tiles
+            WHERE (? IS NULL OR pool_build_id = ?)
             ORDER BY dec_min, ra_min, tile_id
-            """
+            """,
+            [selected, selected],
         ).fetchdf()
     if not tiles.empty:
         tiles["ra_center"] = (
@@ -163,8 +275,21 @@ def load_pool_status(
 
 def load_scoring_status(
     config_path: str | Path = "configs/prediction_pool_candidates.yaml",
+    *,
+    scoring_run_id: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load one scoring run only; defaults to the configured operational run.
+
+    Historical scoring runs are never mixed into the returned frames. Pass an
+    explicit ``scoring_run_id`` from :func:`available_scoring_run_ids` to
+    inspect a non-operational run.
+    """
     paths = prediction_pool_review_paths(config_path)
+    selected = (
+        str(scoring_run_id)
+        if scoring_run_id is not None
+        else configured_scoring_run_id(config_path)
+    )
     if not paths.scoring_db.exists():
         return pd.DataFrame(), pd.DataFrame()
     with _connect(paths.scoring_db) as con:
@@ -178,8 +303,10 @@ def load_scoring_status(
             SELECT scoring_run_id, model_run_id, pool_build_id, status,
                    model_selection_sha256, config_sha256, created_at, updated_at
             FROM prediction_scoring_runs
+            WHERE (? IS NULL OR scoring_run_id = ?)
             ORDER BY updated_at DESC, scoring_run_id
-            """
+            """,
+            [selected, selected],
         ).fetchdf()
         models = con.execute(
             """
@@ -196,9 +323,11 @@ def load_scoring_status(
                 SUM(t.rows_predicted_positive) AS predicted_positive_rows,
                 SUM(t.output_bytes) AS output_bytes
             FROM prediction_scoring_tiles t
+            WHERE (? IS NULL OR t.scoring_run_id = ?)
             GROUP BY t.scoring_run_id, t.result_id
             ORDER BY t.scoring_run_id, t.result_id
-            """
+            """,
+            [selected, selected],
         ).fetchdf()
     if not models.empty:
         if paths.candidate_db.exists():

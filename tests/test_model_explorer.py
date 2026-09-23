@@ -57,6 +57,63 @@ def test_explorer_lists_runs_and_enriches_results(tmp_path):
     assert set(results["negative_holdout"]) == {80}
 
 
+def test_load_run_results_tolerates_missing_history_db_and_empty_run_id(tmp_path):
+    config = tmp_path / "models.yaml"
+    config.write_text(
+        "outputs:\n  training_history_db: " + (tmp_path / "missing.duckdb").as_posix() + "\n",
+        encoding="utf-8",
+    )
+
+    missing_db = load_run_results(config, run_id="run_a")
+    empty_run = load_run_results(config, run_id="")
+
+    assert missing_db.empty
+    assert empty_run.empty
+    assert "result_id" in missing_db.columns
+    assert "result_id" in empty_run.columns
+
+
+def test_model_explorer_starts_without_training_history(tmp_path):
+    config_path = tmp_path / "models.yaml"
+    config_path.write_text(
+        "outputs:\n  training_history_db: " + (tmp_path / "missing.duckdb").as_posix() + "\n",
+        encoding="utf-8",
+    )
+    candidate_config = tmp_path / "candidates.yaml"
+    candidate_config.write_text(
+        "\n".join(
+            [
+                "scoring_config: configs/prediction_pool_scoring.yaml",
+                "outputs:",
+                "  database: " + (tmp_path / "missing_candidates.duckdb").as_posix(),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source = f"""
+import sys
+sys.argv = [
+    "model_explorer.py",
+    "--config", {str(config_path)!r},
+    "--candidate-config", {str(candidate_config)!r},
+]
+from wr_detector.apps.model_explorer import main
+main()
+"""
+    app = AppTest.from_string(source, default_timeout=30)
+    app.run()
+
+    assert not app.exception
+    titles = [element.value for element in app.title]
+    assert titles, "Explorer must render a default page without training history"
+    assert "Prediction pool status" in titles
+    assert "Run overview" not in titles
+    assert "Compare models" not in titles
+    assert "Model detail" not in titles
+    assert "Case review" not in titles
+    assert "Statistics" not in titles
+
+
 def test_altair_charts_omit_optional_none_formats():
     data = pd.DataFrame(
         [

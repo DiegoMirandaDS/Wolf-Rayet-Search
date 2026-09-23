@@ -104,6 +104,17 @@ def test_prediction_export_preserves_scores_and_explains_missing_ranks():
         exported.loc[20, "simbad_review_status"]
         == "not_queried_in_frozen_snapshot"
     )
+    export = _make_prediction_export(
+        consensus,
+        opportunities,
+        features,
+        review,
+        models,
+        scores,
+    )
+    ranks = export["eligibility_rank"].tolist()
+    assert ranks == sorted(ranks)
+    assert export["source_id"].tolist() == [10, 20]
 
 
 def test_personal_path_detection_rejects_windows_user_paths():

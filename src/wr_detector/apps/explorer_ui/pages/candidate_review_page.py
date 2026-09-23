@@ -47,8 +47,10 @@ VIEW_MODES = {
 def render() -> None:
     st.title("Candidate review")
     st.caption(
-        "Case-level review of the frozen RRF shortlist. SIMBAD, Gaia Hα and "
-        "ESP-ELS annotate the ranking; they did not define or re-rank it."
+        "Case-level review of the frozen RRF shortlist, ordered by "
+        "consensus_rank (original equal-weight RRF). SIMBAD, Gaia Hα and "
+        "ESP-ELS annotate the ranking; they did not define or re-rank it. "
+        "Delivery CSVs use eligibility_rank instead."
     )
     try:
         availability = data.candidate_availability()

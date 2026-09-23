@@ -27,7 +27,10 @@ from wr_detector.pipelines.prediction_pool import (
     load_prediction_pool_config,
     make_sky_tiles,
 )
-from wr_detector.pipelines.prediction_pool_exact_union import runtime_lineage
+from wr_detector.pipelines.prediction_pool_exact_union import (
+    ensure_exact_union_builds_status,
+    runtime_lineage,
+)
 
 
 SCORE_OUTPUT_COLUMNS = (
@@ -140,6 +143,12 @@ def score_prediction_pool(
     pool_db = resolve_path(pool_config["output_db"])
     if not pool_db.exists():
         raise FileNotFoundError(pool_db)
+    ensure_exact_union_builds_status(
+        pool_db,
+        expected_tile_ids={
+            tile.tile_id for tile in make_sky_tiles(pool_config)
+        },
+    )
     pool = _load_pool_contract(pool_db, pool_config)
     models = _load_and_validate_models(
         config,
@@ -397,6 +406,13 @@ def audit_prediction_pool_scoring(
     output_db = resolve_path(config["output_db"])
     if not output_db.exists():
         raise FileNotFoundError(output_db)
+    if pool_db.exists():
+        ensure_exact_union_builds_status(
+            pool_db,
+            expected_tile_ids={
+                tile.tile_id for tile in make_sky_tiles(pool_config)
+            },
+        )
     pool = _load_pool_contract(pool_db, pool_config)
     with duckdb.connect(str(output_db), read_only=True) as con:
         records = con.execute(

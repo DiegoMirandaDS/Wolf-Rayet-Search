@@ -12,7 +12,10 @@ def render() -> None:
     st.title("Candidate rankings")
     st.caption(
         "Reciprocal Rank Fusion preserves each model's original rank and "
-        "score. Scores are ranking values, not calibrated probabilities."
+        "score. Consensus, recommendations and top-5 follow-up order by "
+        "consensus_rank (original RRF); stakeholder delivery reorders by "
+        "eligibility_rank (rrf_score / eligible_model_count). Scores are "
+        "ranking values, not calibrated probabilities."
     )
     try:
         availability = data.candidate_availability()

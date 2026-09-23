@@ -6,6 +6,10 @@ import duckdb
 import pandas as pd
 
 from wr_detector.modeling.prediction_pool_review import (
+    available_pool_build_ids,
+    available_scoring_run_ids,
+    configured_pool_build_id,
+    configured_scoring_run_id,
     load_candidate_detail,
     load_candidate_jaccard,
     load_candidate_model_evidence,
@@ -75,6 +79,56 @@ def test_prediction_pool_review_queries_are_traceable_and_deterministic(
     assert {"mollweide_x", "distance_plotted"}.issubset(plot.columns)
 
 
+def test_pool_and_scoring_views_isolate_configured_from_historical_runs(
+    tmp_path: Path,
+):
+    config = _review_fixture(tmp_path)
+
+    assert configured_pool_build_id(config) == "pool"
+    assert configured_scoring_run_id(config) == "score"
+    assert available_pool_build_ids(config) == ["pool", "pool_legacy"]
+    assert available_scoring_run_ids(config) == ["score", "score_legacy"]
+
+    default_pool, default_tiles = load_pool_status(config)
+    assert default_pool["pool_build_id"].tolist() == ["pool"]
+    assert set(default_tiles["pool_build_id"]) == {"pool"}
+
+    historical_pool, historical_tiles = load_pool_status(
+        config,
+        pool_build_id="pool_legacy",
+    )
+    assert historical_pool["pool_build_id"].tolist() == ["pool_legacy"]
+    assert set(historical_tiles["pool_build_id"]) == {"pool_legacy"}
+    assert "pool" not in set(historical_tiles["pool_build_id"])
+
+    default_scoring, default_models = load_scoring_status(config)
+    assert default_scoring["scoring_run_id"].tolist() == ["score"]
+    assert set(default_models["scoring_run_id"]) == {"score"}
+
+    historical_scoring, historical_models = load_scoring_status(
+        config,
+        scoring_run_id="score_legacy",
+    )
+    assert historical_scoring["scoring_run_id"].tolist() == ["score_legacy"]
+    assert set(historical_models["scoring_run_id"]) == {"score_legacy"}
+    assert "score" not in set(historical_models["scoring_run_id"])
+
+
+def test_pool_status_reads_old_schema_without_mutating_it(tmp_path: Path):
+    config = _review_fixture(tmp_path)
+    pool_db = tmp_path / "pool.duckdb"
+    with duckdb.connect(str(pool_db)) as con:
+        con.execute("ALTER TABLE exact_union_builds DROP COLUMN status")
+
+    summary, tiles = load_pool_status(config)
+
+    assert summary["status"].tolist() == ["legacy_schema"]
+    assert tiles["pool_build_id"].tolist() == ["pool"]
+    with duckdb.connect(str(pool_db), read_only=True) as con:
+        columns = {row[0] for row in con.execute("DESCRIBE exact_union_builds").fetchall()}
+    assert "status" not in columns
+
+
 def test_prediction_pool_review_degrades_when_databases_are_missing(
     tmp_path: Path,
 ):
@@ -132,6 +186,11 @@ def _review_fixture(tmp_path: Path) -> Path:
             "('pool', 'completed', 'env', 'v1', 'bits', TIMESTAMP '2026-07-27')"
         )
         con.execute(
+            "INSERT INTO exact_union_builds VALUES "
+            "('pool_legacy', 'completed', 'env-old', 'v1', 'bits', "
+            "TIMESTAMP '2026-06-01')"
+        )
+        con.execute(
             """
             CREATE TABLE exact_union_tiles (
                 pool_build_id VARCHAR, tile_id VARCHAR, ra_min DOUBLE,
@@ -146,6 +205,11 @@ def _review_fixture(tmp_path: Path) -> Path:
             "INSERT INTO exact_union_tiles VALUES "
             "('pool', 'tile', 0, 10, -5, 5, 'completed', "
             "100, 82, 2, 80, 1000, TIMESTAMP '2026-07-27')"
+        )
+        con.execute(
+            "INSERT INTO exact_union_tiles VALUES "
+            "('pool_legacy', 'tile_legacy', 10, 20, -5, 5, 'completed', "
+            "50, 40, 1, 39, 500, TIMESTAMP '2026-06-01')"
         )
 
     scoring_db = tmp_path / "scoring.duckdb"
@@ -166,6 +230,12 @@ def _review_fixture(tmp_path: Path) -> Path:
             "'config-sha', TIMESTAMP '2026-07-27', TIMESTAMP '2026-07-27')"
         )
         con.execute(
+            "INSERT INTO prediction_scoring_runs VALUES "
+            "('score_legacy', 'models', 'pool_legacy', 'completed', "
+            "'models-sha-old', 'config-sha-old', TIMESTAMP '2026-06-01', "
+            "TIMESTAMP '2026-06-01')"
+        )
+        con.execute(
             """
             CREATE TABLE prediction_scoring_tiles (
                 scoring_run_id VARCHAR, result_id VARCHAR,
@@ -179,7 +249,8 @@ def _review_fixture(tmp_path: Path) -> Path:
         con.execute(
             "INSERT INTO prediction_scoring_tiles VALUES "
             "('score','a','relaxed','completed',100,10,90,3,1000),"
-            "('score','b','strict','completed',100,10,90,2,900)"
+            "('score','b','strict','completed',100,10,90,2,900),"
+            "('score_legacy','a','relaxed','completed',50,5,45,1,400)"
         )
 
     candidate_db = tmp_path / "candidate.duckdb"
@@ -262,7 +333,14 @@ def _review_fixture(tmp_path: Path) -> Path:
 
     pool_config = tmp_path / "pool.yaml"
     pool_config.write_text(
-        f"output_db: {pool_db.as_posix()}\n",
+        "\n".join(
+            [
+                "build:",
+                "  pool_build_id: pool",
+                f"output_db: {pool_db.as_posix()}",
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
     scoring_config = tmp_path / "scoring.yaml"
@@ -281,6 +359,10 @@ def _review_fixture(tmp_path: Path) -> Path:
         "\n".join(
             [
                 f"scoring_config: {scoring_config.as_posix()}",
+                "review:",
+                "  review_run_id: review",
+                "  scoring_run_id: score",
+                "  model_run_id: models",
                 "outputs:",
                 f"  database: {candidate_db.as_posix()}",
             ]

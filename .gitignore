@@ -20,6 +20,7 @@ Thumbs.db
 data.zip
 *.zip
 outputs/
+deliverables/
 
 data/databases/*.duckdb
 data/databases/*.duckdb.wal
