@@ -30,9 +30,9 @@ The existing 58,037,788-row pool is therefore registered as a read-only legacy b
 
 This research project began in 2024 and is being developed toward a scientific manuscript. The ranked candidate set has been shared with collaborating astronomers for archival-spectrum searches and spectral assessment. Until that review is complete, every listed source remains a candidate rather than a confirmed Wolf-Rayet star.
 
-![Five candidates prioritized for spectroscopic follow-up, shown on the Galactic sky, in a Gaia colour-magnitude diagram and against their infrared colour and consensus score](reports/public/figures/top5_candidates.png)
+![Five spectroscopic follow-up priorities highlighted against the other sources in the real consensus top 100, on the Galactic sky, a Gaia colour-magnitude diagram and an infrared-colour versus consensus-score plot](reports/public/figures/top5_candidates.png)
 
-*The five follow-up priorities come from the persisted equal-weight RRF consensus. The score ranks sources; it is not a calibrated probability of being a WR star.*
+*Orange stars mark the five follow-up priorities from the persisted equal-weight RRF consensus; grey points are the other sources in its top 100. The score ranks sources; it is not a calibrated probability of being a WR star.*
 
 ## Methodology
 
