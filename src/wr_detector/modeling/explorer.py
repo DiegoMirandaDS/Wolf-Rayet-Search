@@ -134,9 +134,14 @@ def list_explorer_runs(config_path: str | Path = "configs/models.yaml") -> pd.Da
 
 
 def load_run_results(config_path: str | Path = "configs/models.yaml", *, run_id: str) -> pd.DataFrame:
+    if not str(run_id).strip():
+        return enrich_model_results(pd.DataFrame())
     db_path = explorer_db_path(config_path)
+    if not db_path.exists():
+        return enrich_model_results(pd.DataFrame())
     with _connect_read_only(db_path) as con:
-        _require_table(con, "model_results", db_path)
+        if not _table_exists(con, "model_results"):
+            return enrich_model_results(pd.DataFrame())
         results = con.execute("SELECT * FROM model_results WHERE run_id = ?", [run_id]).fetchdf()
     if results.empty:
         return enrich_model_results(results)
@@ -559,11 +564,6 @@ def _connect_read_only(db_path: Path) -> duckdb.DuckDBPyConnection:
     if not db_path.exists():
         raise FileNotFoundError(f"Training history DB not found: {db_path}")
     return duckdb.connect(str(db_path), read_only=True)
-
-
-def _require_table(con: duckdb.DuckDBPyConnection, table: str, db_path: Path) -> None:
-    if not _table_exists(con, table):
-        raise ValueError(f"{table} table not found in {db_path}")
 
 
 def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:

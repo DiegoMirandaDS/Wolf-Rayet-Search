@@ -8,7 +8,12 @@ import pandas as pd
 import streamlit as st
 
 from wr_detector.apps.explorer_ui import charts, data, ui
-from wr_detector.modeling.cases import case_confusion, precision_recall_points, roc_points
+from wr_detector.modeling.cases import (
+    case_confusion,
+    precision_recall_points,
+    roc_points,
+    threshold_operating_point,
+)
 from wr_detector.modeling.explorer import parse_best_params, resolve_artifact_path
 
 
@@ -85,15 +90,18 @@ def _curves_section(selected: pd.Series) -> None:
         st.info("No synchronized holdout predictions; curves are unavailable.")
         return
     threshold = cases["threshold"].dropna().iloc[0] if cases["threshold"].notna().any() else None
+    operating = threshold_operating_point(cases, threshold)
     left, mid, right = st.columns([1.2, 1.2, 1], gap="large")
     with left:
         st.caption(f"Precision-recall | AP {ui.fmt(selected.get('holdout_average_precision'))}")
-        pr_chart = charts.precision_recall_chart(precision_recall_points(cases), threshold=threshold)
+        pr_chart = charts.precision_recall_chart(
+            precision_recall_points(cases), operating=operating
+        )
         if pr_chart is not None:
             st.altair_chart(pr_chart)
     with mid:
         st.caption(f"ROC | AUC {ui.fmt(selected.get('holdout_roc_auc'))}")
-        roc = charts.roc_chart(roc_points(cases), threshold=threshold)
+        roc = charts.roc_chart(roc_points(cases), operating=operating)
         if roc is not None:
             st.altair_chart(roc)
     with right:

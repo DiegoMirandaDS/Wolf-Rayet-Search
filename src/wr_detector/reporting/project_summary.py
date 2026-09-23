@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import duckdb
@@ -35,6 +36,9 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 from wr_detector.features import fit_log_color_locus, inverse_transform_color_values
 from wr_detector.modeling.explorer import load_run_results, rank_models
 from wr_detector.pipelines.prediction_pool import make_sky_tiles
+from wr_detector.pipelines.prediction_pool_exact_union import (
+    ensure_exact_union_builds_status,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -75,6 +79,7 @@ class Evidence:
     negative_relaxed: pd.DataFrame
     reference_positions: pd.DataFrame
     negative_positions: pd.DataFrame
+    top_candidates: pd.DataFrame
 
 
 def _path(relative: str | Path) -> Path:
@@ -293,6 +298,7 @@ def collect_evidence(run_id: str = DEFAULT_RUN_ID) -> Evidence:
         "known_wr_exact_not_current": int(wr_summary["exact_union_not_current"]),
     }
     pool_status = _prediction_pool_status()
+    top_candidates = _load_top_candidates()
 
     return Evidence(
         snapshot_date=datetime.now(ZoneInfo("America/Santiago")).date().isoformat(),
@@ -310,7 +316,20 @@ def collect_evidence(run_id: str = DEFAULT_RUN_ID) -> Evidence:
         negative_relaxed=negative_relaxed,
         reference_positions=reference_positions,
         negative_positions=negative_positions,
+        top_candidates=top_candidates,
     )
+
+
+def _load_top_candidates() -> pd.DataFrame:
+    review_run_id = (
+        _read_yaml("configs/prediction_pool_candidates.yaml")["review"]["review_run_id"]
+    )
+    path = _path(
+        f"reports/analysis/prediction_pool_candidates/{review_run_id}/top_5_candidates.csv"
+    )
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
 
 
 def _latest_audit_directory() -> Path:
@@ -340,6 +359,7 @@ def _prediction_pool_status() -> dict[str, Any]:
             "parquet_bytes": 0,
             "estimated_rows": 154_000_000,
         }
+    ensure_exact_union_builds_status(db_path)
     with duckdb.connect(str(db_path), read_only=True) as con:
         tables = set(con.execute("SHOW TABLES").fetchdf()["name"])
         if "exact_union_tiles" not in tables:
@@ -423,6 +443,7 @@ def generate_figures(evidence: Evidence, figures_dir: Path) -> dict[str, Path]:
         "curves": figures_dir / "precision_recall_roc.png",
         "importance": figures_dir / "feature_importance.png",
         "pool": figures_dir / "prediction_pool_audit_and_status.png",
+        "top5": figures_dir / "top5_candidates.png",
     }
     _plot_pipeline(outputs["pipeline"])
     _plot_retention(evidence, outputs["retention"])
@@ -433,12 +454,26 @@ def generate_figures(evidence: Evidence, figures_dir: Path) -> dict[str, Path]:
     _plot_curves(evidence, outputs["curves"])
     _plot_feature_importance(evidence, outputs["importance"])
     _plot_pool(evidence, outputs["pool"])
+    _plot_top5_candidates(evidence, outputs["top5"])
     return outputs
 
 
 def _save(fig: plt.Figure, output: Path) -> None:
-    fig.savefig(output, dpi=200, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    temporary = output.with_name(
+        f".{output.stem}.{uuid4().hex}.tmp{output.suffix}"
+    )
+    try:
+        fig.savefig(
+            temporary,
+            format=output.suffix.lstrip("."),
+            dpi=200,
+            bbox_inches="tight",
+            facecolor="white",
+        )
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+        plt.close(fig)
 
 
 def _plot_pipeline(output: Path) -> None:
@@ -447,16 +482,16 @@ def _plot_pipeline(output: Path) -> None:
     ax.set_ylim(0, 1)
     ax.axis("off")
     stages = [
-        ("1", "Muestras etiquetadas", "WR conocidas (Crowther)\ncomparación SIMBAD"),
-        ("2", "Enriquecimiento", "Gaia DR3 · 2MASS · AllWISE\nfotometría + astrometría"),
+        ("1", "Labelled samples", "Known WR (Crowther)\nSIMBAD comparison"),
+        ("2", "Enrichment", "Gaia DR3 · 2MASS · AllWISE\nphotometry + astrometry"),
         (
             "3",
             "Datasets + locus",
-            "8 variantes strict/relaxed\nlocus de 6 planos\nexclusión si falla ≥2",
+            "8 strict/relaxed variants\n6-plane locus\nexclude if ≥2 planes fail",
         ),
-        ("4", "Entrenamiento", "144 configuraciones\nAP · top-K · bajo FPR"),
-        ("5", "Prediction pool", "consulta amplia por color\nfiltros propios de cada modelo"),
-        ("6", "Seguimiento", "ranking de candidatas\nconfirmación espectroscópica"),
+        ("4", "Training", "144 configurations\nAP · top-K · low FPR"),
+        ("5", "Prediction pool", "broad colour query\nper-model filters"),
+        ("6", "Follow-up", "candidate ranking\nspectroscopic confirmation"),
     ]
     x_positions = np.linspace(0.105, 0.895, len(stages))
     box_width = 0.132
@@ -466,7 +501,7 @@ def _plot_pipeline(output: Path) -> None:
     ax.text(
         0.04,
         0.91,
-        "Pipeline reproducible de búsqueda de candidatas Wolf-Rayet",
+        "Reproducible Wolf-Rayet candidate search pipeline",
         ha="left",
         va="center",
         fontsize=17,
@@ -476,7 +511,7 @@ def _plot_pipeline(output: Path) -> None:
     ax.text(
         0.04,
         0.82,
-        "De catálogos etiquetados a una lista priorizada para seguimiento espectroscópico",
+        "From labelled catalogues to a prioritized list for spectroscopic follow-up",
         ha="left",
         va="center",
         fontsize=10.5,
@@ -581,7 +616,7 @@ def _plot_pipeline(output: Path) -> None:
     ax.text(
         0.06,
         0.128,
-        "Trazabilidad",
+        "Traceability",
         ha="left",
         va="center",
         fontsize=9.5,
@@ -591,8 +626,8 @@ def _plot_pipeline(output: Path) -> None:
     ax.text(
         0.16,
         0.128,
-        "configuraciones versionadas  ·  snapshots y hashes  ·  DuckDB  ·  "
-        "run_id / result_id  ·  artefactos auditables",
+        "versioned configurations  ·  snapshots and hashes  ·  DuckDB  ·  "
+        "run_id / result_id  ·  auditable artefacts",
         ha="left",
         va="center",
         fontsize=9,
@@ -627,18 +662,18 @@ def _plot_retention(evidence: Evidence, output: Path) -> None:
         int(neg_relaxed["rows"]),
         int(neg_relaxed["locus_keep"]),
     ]
-    labels = ["Catálogo / consulta", "Gaia DR3", "Fotometría relaxed", "Locus keep"]
+    labels = ["Catalogue / query", "Gaia DR3", "Relaxed photometry", "Locus keep"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
     for ax, values, title, color in [
-        (axes[0], wr_values, "Referencia WR", ORANGE),
-        (axes[1], neg_values, "Muestra negativa SIMBAD", BLUE),
+        (axes[0], wr_values, "WR reference", ORANGE),
+        (axes[1], neg_values, "SIMBAD negative sample", BLUE),
     ]:
         y = np.arange(len(labels))
         ax.barh(y, values, color=color, alpha=0.88, edgecolor=INK, linewidth=0.4)
         ax.set_yticks(y, labels)
         ax.invert_yaxis()
         ax.set_title(title, loc="left")
-        ax.set_xlabel("Fuentes")
+        ax.set_xlabel("Sources")
         ax.grid(axis="x")
         ax.grid(axis="y", visible=False)
         max_value = max(values)
@@ -646,13 +681,13 @@ def _plot_retention(evidence: Evidence, output: Path) -> None:
             ax.text(
                 value + max_value * 0.015,
                 i,
-                f"{value:,}".replace(",", "."),
+                f"{value:,}",
                 va="center",
                 fontsize=9,
             )
         ax.set_xlim(0, max_value * 1.18)
     fig.suptitle(
-        "Retención por etapa en la variante relaxed_photometry",
+        "Stage retention in the relaxed_photometry variant",
         x=0.07,
         ha="left",
         fontsize=13,
@@ -661,7 +696,9 @@ def _plot_retention(evidence: Evidence, output: Path) -> None:
     fig.text(
         0.07,
         0.01,
-        "El locus conserva 331/347 WR (95,4%) y reduce 66.787 negativos a 33.343.",
+        f"The locus keeps {int(wr_relaxed['locus_keep'])}/{int(wr_relaxed['rows'])} WR "
+        f"({wr_relaxed['locus_keep_fraction']:.1%}) and reduces "
+        f"{int(neg_relaxed['rows']):,} negatives to {int(neg_relaxed['locus_keep']):,}.",
         color=MUTED,
         fontsize=9,
     )
@@ -671,18 +708,18 @@ def _plot_retention(evidence: Evidence, output: Path) -> None:
 
 def _plot_negative_composition(evidence: Evidence, output: Path) -> None:
     mapping = {
-        "RGB*": "Gigantes rojas",
-        "YSO": "Objetos jóvenes",
-        "LongPeriodV*": "Variables de período largo",
-        "EmLine*": "Estrellas de emisión",
-        "C*": "Estrellas de carbono",
-        "EclBin": "Binarias eclipsantes",
-        "Eruptive*": "Variables eruptivas",
+        "RGB*": "Red giants",
+        "YSO": "Young objects",
+        "LongPeriodV*": "Long-period variables",
+        "EmLine*": "Emission-line stars",
+        "C*": "Carbon stars",
+        "EclBin": "Eclipsing binaries",
+        "Eruptive*": "Eruptive variables",
         "TTauri*": "T Tauri",
         "AGB*": "AGB",
         "Be*": "Be",
-        "BlueSG": "Supergigantes azules",
-        "HighMassXBin": "Binarias X de alta masa",
+        "BlueSG": "Blue supergiants",
+        "HighMassXBin": "High-mass X-ray binaries",
     }
     data = evidence.negative_types.copy()
     data["label"] = data["object_group"].map(mapping).fillna(data["object_group"])
@@ -690,8 +727,8 @@ def _plot_negative_composition(evidence: Evidence, output: Path) -> None:
     fig, ax = plt.subplots(figsize=(9.5, 5.3))
     colors = [BLUE if value >= 5_000 else BLUE_LIGHT for value in data["rows"]]
     ax.barh(data["label"], data["rows"], color=colors, edgecolor=INK, linewidth=0.35)
-    ax.set_title("Muestra SIMBAD por clase de consulta", loc="left")
-    ax.set_xlabel("Fuentes SIMBAD con Gaia DR3")
+    ax.set_title("SIMBAD sample by query class", loc="left")
+    ax.set_xlabel("SIMBAD sources with Gaia DR3")
     ax.grid(axis="x")
     ax.grid(axis="y", visible=False)
     max_value = float(data["rows"].max())
@@ -699,7 +736,7 @@ def _plot_negative_composition(evidence: Evidence, output: Path) -> None:
         ax.text(
             value + max_value * 0.012,
             i,
-            f"{int(value):,}".replace(",", "."),
+            f"{int(value):,}",
             va="center",
             fontsize=8.5,
         )
@@ -707,7 +744,7 @@ def _plot_negative_composition(evidence: Evidence, output: Path) -> None:
     fig.text(
         0.125,
         0.01,
-        "La muestra reúne las clases contaminantes seleccionadas en las consultas SIMBAD.",
+        "The sample collects the contaminant classes selected in the SIMBAD queries.",
         fontsize=8.8,
         color=MUTED,
     )
@@ -723,8 +760,8 @@ def _plot_color_locus(evidence: Evidence, output: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.7))
     filters = _read_yaml("configs/filters.yaml")["color_locus"]
     for ax, x_name, y_name, title in [
-        (axes[0], "G_BP", "G_RP", "Plano Gaia: G-BP frente a G-RP"),
-        (axes[1], "J_H", "J_K", "Plano 2MASS: J-H frente a J-Ks"),
+        (axes[0], "G_BP", "G_RP", "Gaia plane: G-BP vs G-RP"),
+        (axes[1], "J_H", "J_K", "2MASS plane: J-H vs J-Ks"),
     ]:
         wr = evidence.reference_relaxed
         neg = evidence.negative_relaxed
@@ -756,7 +793,7 @@ def _plot_color_locus(evidence: Evidence, output: Path) -> None:
             edgecolors="white",
             linewidths=0.45,
             alpha=0.9,
-            label="WR retenidas",
+            label="Retained WR",
             zorder=3,
         )
         ax.scatter(
@@ -766,7 +803,7 @@ def _plot_color_locus(evidence: Evidence, output: Path) -> None:
             c=PINK,
             marker="x",
             linewidths=1.2,
-            label="WR fuera del agregado",
+            label="WR outside locus",
             zorder=4,
         )
         low = float(np.nanquantile(pd.concat([wr[x_name], neg[x_name]]), 0.005))
@@ -783,7 +820,7 @@ def _plot_color_locus(evidence: Evidence, output: Path) -> None:
             center_t + threshold, transform="signed_log1p"
         )
         ax.plot(xs, center, color=INK, lw=1.5, label="Huber")
-        ax.plot(xs, lower, color=INK, lw=1.0, ls="--", label="q97,5% de |r|")
+        ax.plot(xs, lower, color=INK, lw=1.0, ls="--", label="q97.5% of |r|")
         ax.plot(xs, upper, color=INK, lw=1.0, ls="--")
         ax.set_title(title, loc="left")
         ax.set_xlabel(x_name.replace("_", " - "))
@@ -798,7 +835,7 @@ def _plot_color_locus(evidence: Evidence, output: Path) -> None:
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=4, bbox_to_anchor=(0.5, 0.02))
     fig.suptitle(
-        "Locus de color en relaxed_photometry",
+        "Colour locus in relaxed_photometry",
         x=0.07,
         ha="left",
         fontsize=13,
@@ -841,16 +878,16 @@ def _plot_sky(evidence: Evidence, output: Path) -> None:
         edgecolors="white",
         linewidths=0.35,
         alpha=0.9,
-        label="WR con alias Gaia DR3",
+        label="WR with Gaia DR3 aliases",
         zorder=3,
     )
     ax.grid(True, color="#c8d1dc", alpha=0.75)
-    ax.set_title("Distribución galáctica de la referencia y la muestra negativa", pad=18)
+    ax.set_title("Galactic distribution of the reference and negative sample", pad=18)
     ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.16))
     fig.text(
         0.5,
         0.015,
-        "l = 0° al centro y longitud creciente hacia la izquierda. Las coordenadas se reservan para diagnóstico espacial.",
+        "l = 0° at centre and longitude increases to the left. Positions are reserved for spatial diagnostics.",
         ha="center",
         fontsize=8.8,
         color=MUTED,
@@ -881,31 +918,38 @@ def _plot_model_performance(evidence: Evidence, output: Path) -> None:
         )
     highlights = results[results["result_id"].isin([LEADING_RESULT_ID, AP_LEADER_RESULT_ID, STABLE_RESULT_ID])]
     label_specs = {
-        LEADING_RESULT_ID: ("broad shortlist", (-70, 9)),
-        AP_LEADER_RESULT_ID: ("AP leader", (-28, 13)),
-        STABLE_RESULT_ID: ("accepted/stable", (8, -17)),
+        LEADING_RESULT_ID: ("broad shortlist", "*", (-70, 10)),
+        AP_LEADER_RESULT_ID: ("AP leader", "D", (-30, 14)),
+        STABLE_RESULT_ID: ("accepted/stable", "P", (10, -18)),
     }
     for _, row in highlights.iterrows():
-        label, offset = label_specs[str(row["result_id"])]
+        label, marker, offset = label_specs[str(row["result_id"])]
+        x_value = row["holdout_recall_at_100"]
+        y_value = row["holdout_average_precision"]
         axes[0].scatter(
-            [row["holdout_recall_at_100"]],
-            [row["holdout_average_precision"]],
-            s=110,
-            facecolors="none",
-            edgecolors=INK,
-            linewidths=1.4,
-            zorder=4,
+            [x_value],
+            [y_value],
+            s=140,
+            marker=marker,
+            c=GOLD,
+            edgecolors="white",
+            linewidths=1.2,
+            zorder=5,
         )
         axes[0].annotate(
             label,
-            (row["holdout_recall_at_100"], row["holdout_average_precision"]),
+            (x_value, y_value),
             xytext=offset,
             textcoords="offset points",
             fontsize=8,
+            color=INK,
+            arrowprops=dict(arrowstyle="-", color=MUTED, lw=0.8, shrinkA=0, shrinkB=4),
+            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec=GRID, lw=0.6, alpha=0.92),
+            zorder=6,
         )
-    axes[0].set_title("AP frente a Recall@100", loc="left")
+    axes[0].set_title("AP vs Recall@100", loc="left")
     axes[0].set_xlabel("Recall @100")
-    axes[0].set_ylabel("Average Precision de holdout")
+    axes[0].set_ylabel("Holdout average precision")
     axes[0].set_xlim(0, 0.83)
     axes[0].set_ylim(0, max(0.62, float(results["holdout_average_precision"].max()) * 1.08))
     model_handles = [
@@ -943,7 +987,7 @@ def _plot_model_performance(evidence: Evidence, output: Path) -> None:
         ("holdout_recall_at_50", "R@50"),
         ("holdout_recall_at_100", "R@100"),
         ("holdout_precision_at_100", "P@100"),
-        ("holdout_recall_at_fpr_0p005", "R @ FPR 0,5%"),
+        ("holdout_recall_at_fpr_0p005", "R @ FPR 0.5%"),
     ]
     x = np.arange(len(metrics))
     width = 0.19
@@ -961,11 +1005,11 @@ def _plot_model_performance(evidence: Evidence, output: Path) -> None:
         )
     axes[1].set_xticks(x, [label for _, label in metrics])
     axes[1].set_ylim(0, 0.82)
-    axes[1].set_title("Perfiles de resultados seleccionados", loc="left")
-    axes[1].set_ylabel("Proporción")
+    axes[1].set_title("Selected result profiles", loc="left")
+    axes[1].set_ylabel("Proportion")
     axes[1].legend(fontsize=7.4, loc="upper right")
     fig.suptitle(
-        "Resultados de run_v3_main (144 configuraciones)",
+        "run_v3_main results (144 configurations)",
         x=0.07,
         ha="left",
         fontsize=13,
@@ -1010,22 +1054,22 @@ def _plot_curves(evidence: Evidence, output: Path) -> None:
             evidence.predictions["result_id"].eq(LEADING_RESULT_ID)
         ]["target"].mean()
     )
-    axes[0].axhline(prevalence, color=INK, lw=1.0, ls=":", label="Prevalencia holdout")
-    axes[0].set_title("Curvas Precision-Recall", loc="left")
+    axes[0].axhline(prevalence, color=INK, lw=1.0, ls=":", label="Holdout prevalence")
+    axes[0].set_title("Precision-Recall curves", loc="left")
     axes[0].set_xlabel("Recall")
     axes[0].set_ylabel("Precision")
     axes[0].set_xlim(0, 1)
     axes[0].set_ylim(0, 1.02)
     axes[0].legend(fontsize=8)
-    axes[1].plot([0, 1], [0, 1], color=INK, lw=1.0, ls=":", label="Aleatorio")
-    axes[1].set_title("Curvas ROC", loc="left")
+    axes[1].plot([0, 1], [0, 1], color=INK, lw=1.0, ls=":", label="Random")
+    axes[1].set_title("ROC curves", loc="left")
     axes[1].set_xlabel("False-positive rate")
     axes[1].set_ylabel("True-positive rate")
     axes[1].set_xlim(0, 0.03)
     axes[1].set_ylim(0, 1.02)
     axes[1].legend(fontsize=8)
     fig.suptitle(
-        "Comparación en el mismo holdout relaxed_photometry",
+        "Comparison on the same relaxed_photometry holdout",
         x=0.07,
         ha="left",
         fontsize=13,
@@ -1034,7 +1078,7 @@ def _plot_curves(evidence: Evidence, output: Path) -> None:
     fig.text(
         0.07,
         0.01,
-        "La vista ROC se amplía al 3% de FPR: en un pool masivo, pequeñas diferencias de FPR dominan el volumen de falsos positivos.",
+        "The ROC view is zoomed to 3% FPR: in a massive pool, small FPR differences dominate false-positive volume.",
         color=MUTED,
         fontsize=8.8,
     )
@@ -1053,14 +1097,14 @@ def _plot_feature_importance(evidence: Evidence, output: Path) -> None:
         edgecolor=INK,
         linewidth=0.35,
     )
-    ax.set_title("Importancia interna del XGBoost relaxed_photometry / none", loc="left")
-    ax.set_xlabel("Importancia normalizada del estimador")
+    ax.set_title("Internal XGBoost importance: relaxed_photometry / none", loc="left")
+    ax.set_xlabel("Normalized estimator importance")
     ax.grid(axis="x")
     ax.grid(axis="y", visible=False)
     fig.text(
         0.125,
         0.01,
-        "Ganancia interna del estimador para este ajuste y este conjunto de entrenamiento.",
+        "Estimator gain importance for this fit and this training set.",
         fontsize=8.8,
         color=MUTED,
     )
@@ -1077,29 +1121,29 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
     missed = audit["compatible_exact_not_aggregate"]
     common = exact - missed
     axes[0].barh(
-        ["Unión exacta compatible"],
+        ["Compatible exact union"],
         [common],
         color=BLUE,
         edgecolor=INK,
         linewidth=0.4,
-        label="También acepta el agregado",
+        label="Also accepted by the aggregate",
     )
     axes[0].barh(
-        ["Unión exacta compatible"],
+        ["Compatible exact union"],
         [missed],
         left=[common],
         color=PINK,
         edgecolor=INK,
         linewidth=0.4,
-        label="Perdidas por agregado legacy",
+        label="Dropped by the legacy aggregate",
     )
-    axes[0].set_title("Auditoría del filtro legacy", loc="left")
-    axes[0].set_xlabel("Fuentes en 18 regiones Gaia")
+    axes[0].set_title("Legacy filter audit", loc="left")
+    axes[0].set_xlabel("Sources in 18 Gaia regions")
     axes[0].legend(fontsize=8, loc="lower right")
     axes[0].text(
         common + missed / 2,
         0,
-        f"{missed:,}\n({audit['loss_fraction']:.2%})".replace(",", "."),
+        f"{missed:,}\n({audit['loss_fraction']:.2%})",
         ha="center",
         va="center",
         color="white",
@@ -1115,7 +1159,7 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
         color=ORANGE,
         edgecolor=INK,
         linewidth=0.4,
-        label="Completados",
+        label="Completed",
     )
     axes[1].barh(
         ["Tiles"],
@@ -1124,11 +1168,18 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
         color="#e8edf2",
         edgecolor=INK,
         linewidth=0.4,
-        label="Pendientes",
+        label="Pending",
     )
     axes[1].set_xlim(0, total)
-    axes[1].set_title("Build exact-union en curso", loc="left")
-    axes[1].set_xlabel("Tiles terminales")
+    axes[1].set_title(
+        (
+            "Exact-union build completed"
+            if status["status"] == "completed"
+            else "Exact-union build in progress"
+        ),
+        loc="left",
+    )
+    axes[1].set_xlabel("Terminal tiles")
     axes[1].text(
         completed / 2 if completed else 2,
         0,
@@ -1142,8 +1193,8 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
         total * 0.5,
         -0.42,
         (
-            f"{status['acquired_rows'] / 1e6:.1f} M adquiridas; "
-            f"{status['eligible_rows'] / 1e6:.1f} M elegibles para scoring"
+            f"{status['acquired_rows'] / 1e6:.1f} M acquired; "
+            f"{status['eligible_rows'] / 1e6:.1f} M eligible for scoring"
         ),
         ha="center",
         fontsize=8.8,
@@ -1151,7 +1202,7 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
     )
     axes[1].legend(fontsize=8, loc="lower right")
     fig.suptitle(
-        "Por qué se reconstruye la prediction pool y cuál es su estado",
+        "Legacy pool audit and exact-union status",
         x=0.07,
         ha="left",
         fontsize=13,
@@ -1161,8 +1212,140 @@ def _plot_pool(evidence: Evidence, output: Path) -> None:
     _save(fig, output)
 
 
+def _plot_top5_candidates(evidence: Evidence, output: Path) -> None:
+    data = evidence.top_candidates
+    if data.empty:
+        fig, ax = plt.subplots(figsize=(8, 3.2))
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.55,
+            "Top-5 candidates unavailable",
+            ha="center",
+            va="center",
+            fontsize=13,
+            weight="bold",
+            color=INK,
+        )
+        ax.text(
+            0.5,
+            0.35,
+            "Run build-prediction-pool-candidates to write top_5_candidates.csv.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color=MUTED,
+        )
+        _save(fig, output)
+        return
+
+    plot_data = data.sort_values("followup_rank").reset_index(drop=True)
+    rank_colors = [ORANGE, GOLD, BLUE, OLIVE, PINK]
+
+    fig = plt.figure(figsize=(13.2, 4.8))
+    sky_ax = fig.add_subplot(131, projection="mollweide")
+    cmd_ax = fig.add_subplot(132)
+    w12_ax = fig.add_subplot(133)
+
+    sky_markers = []
+    for index, row in plot_data.iterrows():
+        l_rad = np.deg2rad(((row["galactic_l"] + 180) % 360) - 180)
+        b_rad = np.deg2rad(row["galactic_b"])
+        marker = sky_ax.scatter(
+            [-l_rad],
+            [b_rad],
+            s=70,
+            marker="*",
+            c=rank_colors[index % len(rank_colors)],
+            edgecolors="white",
+            linewidths=1.2,
+            zorder=4,
+        )
+        sky_markers.append(marker)
+    sky_ax.grid(True, color="#c8d1dc", alpha=0.75)
+    sky_ax.set_xticklabels([])
+    sky_ax.set_title("Galactic sky", loc="left", fontsize=11)
+
+    for index, row in plot_data.iterrows():
+        cmd_ax.scatter(
+            row["BP_RP"],
+            row["G"],
+            s=70,
+            marker="*",
+            c=rank_colors[index % len(rank_colors)],
+            edgecolors="white",
+            linewidths=1.2,
+            zorder=4,
+        )
+        cmd_ax.annotate(
+            str(int(row["followup_rank"])),
+            (row["BP_RP"], row["G"]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+            weight="bold",
+            color=INK,
+        )
+    cmd_ax.invert_yaxis()
+    cmd_ax.margins(x=0.14, y=0.15)
+    cmd_ax.set_xlabel("BP - RP")
+    cmd_ax.set_ylabel("G")
+    cmd_ax.set_title("Gaia colour-magnitude", loc="left", fontsize=11)
+
+    for index, row in plot_data.iterrows():
+        w12_ax.scatter(
+            row["W1_W2"],
+            row["rrf_score"],
+            s=70,
+            marker="*",
+            c=rank_colors[index % len(rank_colors)],
+            edgecolors="white",
+            linewidths=1.2,
+            zorder=4,
+        )
+        w12_ax.annotate(
+            f"{int(row['followup_rank'])} ({int(row['model_support'])}/5)",
+            (row["W1_W2"], row["rrf_score"]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+            weight="bold",
+            color=INK,
+        )
+    w12_ax.set_xlabel("W1 - W2")
+    w12_ax.set_ylabel("RRF score")
+    w12_ax.set_title("Infrared excess vs consensus", loc="left", fontsize=11)
+    w12_ax.margins(x=0.14, y=0.15)
+
+    fig.suptitle(
+        "Top five candidates for spectroscopic follow-up",
+        x=0.07,
+        ha="left",
+        fontsize=13,
+        weight="bold",
+    )
+    fig.legend(
+        sky_markers,
+        [f"Rank {int(value)}" for value in plot_data["followup_rank"]],
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.06),
+        ncol=len(sky_markers),
+        frameon=False,
+        fontsize=8.5,
+    )
+    fig.text(
+        0.07,
+        0.01,
+        "Galactic longitude increases left. Labels show follow-up rank; scores are not calibrated probabilities.",
+        color=MUTED,
+        fontsize=8.8,
+    )
+    fig.tight_layout(rect=[0, 0.13, 1, 0.94])
+    _save(fig, output)
+
+
 def _format_int(value: int | float) -> str:
-    return f"{int(value):,}".replace(",", ".")
+    return f"{int(value):,}"
 
 
 def _evidence_json(evidence: Evidence) -> dict[str, Any]:
@@ -1256,6 +1439,10 @@ def write_source_notes(
         (
             f"| `{figures['pool'].name}` | Why was the legacy pool rejected and what is the new build status? "
             "| Stacked bars | 18-region audit + exact-union build registry |"
+        ),
+        (
+            f"| `{figures['top5'].name}` | Where do the five follow-up priorities sit on the sky and in colour space? "
+            "| Mollweide + CMD + W1-W2 support | `top_5_candidates.csv` |"
         ),
         "",
         "Palette policy: one blue root for context, orange for WR/focal results, "

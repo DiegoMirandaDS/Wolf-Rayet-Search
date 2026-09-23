@@ -13,11 +13,19 @@ from wr_detector.pipelines.exact_variant_union import (
     build_variant_mask_schema,
 )
 from wr_detector.pipelines.prediction_pool_scoring import (
+    _validate_path_component,
     audit_prediction_pool_scoring,
     file_sha256,
     list_scoreable_models,
     score_prediction_pool,
 )
+
+
+def test_real_sky_tile_ids_are_safe_path_components():
+    _validate_path_component(
+        "ra000p00_010p00__dec+00p00_+10p00",
+        label="tile_id",
+    )
 
 
 def test_scoring_filters_variant_bit_tracks_missing_and_resumes(tmp_path):
@@ -113,6 +121,23 @@ def test_scoring_requires_explicit_model_selection(tmp_path):
         )
 
 
+def test_scoring_rejects_pool_without_completed_build_status(tmp_path):
+    setup = _write_scoring_fixture(tmp_path)
+    with duckdb.connect(str(setup["pool_db"])) as con:
+        con.execute(
+            "UPDATE exact_union_builds SET status='partial'"
+        )
+
+    with pytest.raises(ValueError, match="is not completed"):
+        score_prediction_pool(
+            setup["scoring_config"],
+            scoring_run_id="score_test",
+            model_run_id="model_run",
+            result_ids=["result_strict"],
+            dry_run=True,
+        )
+
+
 def _write_scoring_fixture(tmp_path: Path) -> dict[str, Path]:
     schema = build_variant_mask_schema(
         ["strict_photometry", "relaxed_photometry"]
@@ -150,6 +175,7 @@ def _write_scoring_fixture(tmp_path: Path) -> dict[str, Path]:
             """
             CREATE TABLE exact_union_builds (
                 pool_build_id VARCHAR,
+                status VARCHAR,
                 envelope_sha256 VARCHAR,
                 bitmask_schema_version VARCHAR,
                 bitmask_schema_sha256 VARCHAR
@@ -157,8 +183,8 @@ def _write_scoring_fixture(tmp_path: Path) -> dict[str, Path]:
             """
         )
         con.execute(
-            "INSERT INTO exact_union_builds VALUES (?, ?, ?, ?)",
-            ["pool", "envelope", schema.version, schema.sha256],
+            "INSERT INTO exact_union_builds VALUES (?, ?, ?, ?, ?)",
+            ["pool", "completed", "envelope", schema.version, schema.sha256],
         )
         con.execute(
             """
@@ -296,4 +322,5 @@ def _write_scoring_fixture(tmp_path: Path) -> dict[str, Path]:
     return {
         "scoring_config": scoring_config,
         "model_path": model_path,
+        "pool_db": pool_db,
     }

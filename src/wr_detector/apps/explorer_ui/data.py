@@ -25,7 +25,9 @@ from wr_detector.modeling.candidate_stacks import (
     validator_pairs,
 )
 from wr_detector.modeling.layers import VALIDATION_LAYERS, list_layer_runs, load_layer_results
+from wr_detector.modeling import prediction_pool_review as pool_review
 from wr_detector.modeling.explorer import (
+    enrich_model_results,
     list_explorer_runs,
     load_feature_importance,
     load_prediction_summary,
@@ -38,7 +40,14 @@ def config_path() -> str:
 
 
 def run_id() -> str:
-    return st.session_state["run_id"]
+    return str(st.session_state.get("run_id", "") or "")
+
+
+def candidate_config_path() -> str:
+    return st.session_state.get(
+        "candidate_config_path",
+        "configs/prediction_pool_candidates.yaml",
+    )
 
 
 def runs() -> pd.DataFrame:
@@ -46,7 +55,10 @@ def runs() -> pd.DataFrame:
 
 
 def results() -> pd.DataFrame:
-    return _results(config_path(), run_id())
+    run = run_id()
+    if not run:
+        return _empty_results()
+    return _results(config_path(), run)
 
 
 def feature_importance(result_id: str) -> pd.DataFrame:
@@ -147,6 +159,130 @@ def candidate_stack(
     )
 
 
+def candidate_availability() -> dict[str, object]:
+    return pool_review.review_availability(candidate_config_path())
+
+
+def candidate_review_runs() -> pd.DataFrame:
+    return _candidate_review_runs(
+        candidate_config_path(),
+        _candidate_revision(),
+    )
+
+
+def configured_pool_build_id() -> str | None:
+    return pool_review.configured_pool_build_id(candidate_config_path())
+
+
+def configured_scoring_run_id() -> str | None:
+    return pool_review.configured_scoring_run_id(candidate_config_path())
+
+
+def available_pool_build_ids() -> list[str]:
+    return _available_pool_build_ids(candidate_config_path(), _candidate_revision())
+
+
+def available_scoring_run_ids() -> list[str]:
+    return _available_scoring_run_ids(candidate_config_path(), _candidate_revision())
+
+
+def pool_status(pool_build_id: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return _pool_status(
+        candidate_config_path(),
+        _candidate_revision(),
+        pool_build_id or "",
+    )
+
+
+def scoring_status(scoring_run_id: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return _scoring_status(
+        candidate_config_path(),
+        _candidate_revision(),
+        scoring_run_id or "",
+    )
+
+
+def candidate_models() -> pd.DataFrame:
+    return _candidate_models(candidate_config_path(), _candidate_revision())
+
+
+def candidate_summary() -> dict[str, object]:
+    return _candidate_summary(candidate_config_path(), _candidate_revision())
+
+
+def candidate_dispositions() -> pd.DataFrame:
+    return _candidate_dispositions(
+        candidate_config_path(),
+        _candidate_revision(),
+    )
+
+
+def candidate_rankings(
+    *,
+    view: str = "consensus",
+    result_id: str | None = None,
+    limit: int = 500,
+    dispositions: tuple[str, ...] = (),
+    min_model_support: int = 1,
+    followup_only: bool = False,
+    require_halpha: bool = False,
+) -> pd.DataFrame:
+    return _candidate_rankings(
+        candidate_config_path(),
+        _candidate_revision(),
+        view,
+        result_id,
+        int(limit),
+        tuple(dispositions),
+        int(min_model_support),
+        bool(followup_only),
+        bool(require_halpha),
+    )
+
+
+def candidate_detail(source_id: int) -> pd.DataFrame:
+    return _candidate_detail(
+        candidate_config_path(),
+        _candidate_revision(),
+        int(source_id),
+    )
+
+
+def candidate_model_evidence(source_id: int) -> pd.DataFrame:
+    return _candidate_model_evidence(
+        candidate_config_path(),
+        _candidate_revision(),
+        int(source_id),
+    )
+
+
+def candidate_jaccard(top_k: int) -> pd.DataFrame:
+    return _candidate_jaccard(
+        candidate_config_path(),
+        _candidate_revision(),
+        int(top_k),
+    )
+
+
+def candidate_plot_frame(
+    *,
+    min_parallax_over_error: float = 2.0,
+    max_distance_kpc: float = 15.0,
+) -> pd.DataFrame:
+    return _candidate_plot_frame(
+        candidate_config_path(),
+        _candidate_revision(),
+        float(min_parallax_over_error),
+        float(max_distance_kpc),
+    )
+
+
+def _candidate_revision() -> str:
+    return pool_review.prediction_pool_review_revision(
+        candidate_config_path()
+    )
+
+
 def _layer(layer_key: str):
     return next(layer for layer in VALIDATION_LAYERS if layer.key == layer_key)
 
@@ -214,6 +350,143 @@ def _candidate_stack(
 
 
 @st.cache_data(show_spinner=False)
+def _candidate_review_runs(
+    config: str,
+    revision: str,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_review_runs(config)
+
+
+@st.cache_data(show_spinner=False)
+def _available_pool_build_ids(config: str, revision: str) -> list[str]:
+    return pool_review.available_pool_build_ids(config)
+
+
+@st.cache_data(show_spinner=False)
+def _available_scoring_run_ids(config: str, revision: str) -> list[str]:
+    return pool_review.available_scoring_run_ids(config)
+
+
+@st.cache_data(show_spinner=False)
+def _pool_status(
+    config: str,
+    revision: str,
+    pool_build_id: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return pool_review.load_pool_status(
+        config,
+        pool_build_id=pool_build_id or None,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _scoring_status(
+    config: str,
+    revision: str,
+    scoring_run_id: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return pool_review.load_scoring_status(
+        config,
+        scoring_run_id=scoring_run_id or None,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_models(
+    config: str,
+    revision: str,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_models(config)
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_summary(
+    config: str,
+    revision: str,
+) -> dict[str, object]:
+    return pool_review.load_candidate_summary(config)
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_dispositions(
+    config: str,
+    revision: str,
+) -> pd.DataFrame:
+    return pool_review.load_disposition_counts(config)
+
+
+@st.cache_data(show_spinner="Loading candidate rankings...")
+def _candidate_rankings(
+    config: str,
+    revision: str,
+    view: str,
+    result_id: str | None,
+    limit: int,
+    dispositions: tuple[str, ...],
+    min_model_support: int,
+    followup_only: bool,
+    require_halpha: bool,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_rankings(
+        config,
+        view=view,
+        result_id=result_id,
+        limit=limit,
+        dispositions=dispositions,
+        min_model_support=min_model_support,
+        followup_only=followup_only,
+        require_halpha=require_halpha,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_detail(
+    config: str,
+    revision: str,
+    source_id: int,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_detail(
+        config,
+        source_id=source_id,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_model_evidence(
+    config: str,
+    revision: str,
+    source_id: int,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_model_evidence(
+        config,
+        source_id=source_id,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_jaccard(
+    config: str,
+    revision: str,
+    top_k: int,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_jaccard(config, top_k=top_k)
+
+
+@st.cache_data(show_spinner="Preparing candidate visualizations...")
+def _candidate_plot_frame(
+    config: str,
+    revision: str,
+    min_parallax_over_error: float,
+    max_distance_kpc: float,
+) -> pd.DataFrame:
+    return pool_review.load_candidate_plot_frame(
+        config,
+        min_parallax_over_error=min_parallax_over_error,
+        max_distance_kpc=max_distance_kpc,
+    )
+
+
+@st.cache_data(show_spinner=False)
 def _runs(config: str) -> pd.DataFrame:
     return list_explorer_runs(config)
 
@@ -221,6 +494,10 @@ def _runs(config: str) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def _results(config: str, run: str) -> pd.DataFrame:
     return load_run_results(config, run_id=run)
+
+
+def _empty_results() -> pd.DataFrame:
+    return enrich_model_results(pd.DataFrame())
 
 
 @st.cache_data(show_spinner=False)

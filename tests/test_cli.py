@@ -38,4 +38,8 @@ def test_explore_models_cli_builds_streamlit_command(monkeypatch):
     assert command[command.index("--server.enableCORS") + 1] == "true"
     assert command[command.index("--server.enableXsrfProtection") + 1] == "true"
     assert command[command.index("--browser.gatherUsageStats") + 1] == "false"
-    assert command[-2:] == ["--config", "configs\\models.yaml"] or command[-2:] == ["--config", "configs/models.yaml"]
+    assert command[command.index("--config") + 1].replace("\\", "/") == "configs/models.yaml"
+    assert (
+        command[command.index("--candidate-config") + 1].replace("\\", "/")
+        == "configs/prediction_pool_candidates.yaml"
+    )

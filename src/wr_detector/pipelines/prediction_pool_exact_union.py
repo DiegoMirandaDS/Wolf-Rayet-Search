@@ -16,7 +16,7 @@ import platform
 from pathlib import Path
 import subprocess
 from time import monotonic
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import duckdb
 import pandas as pd
@@ -108,7 +108,8 @@ def build_exact_union_prediction_pool(
     )
     envelope = derive_color_envelope(config)
     coverage = audit_color_envelope_reference_coverage(config, envelope)
-    tiles = make_sky_tiles(config)
+    expected_tiles = make_sky_tiles(config)
+    tiles = expected_tiles
     if max_tiles is not None:
         tiles = tiles[: int(max_tiles)]
 
@@ -289,11 +290,18 @@ def build_exact_union_prediction_pool(
                     )
 
     refresh_exact_union_views(db_path, acquisition_dir)
+    build_status = finalize_exact_union_build_status(
+        db_path,
+        pool_build_id=pool_build_id,
+        expected_tile_ids=[tile.tile_id for tile in expected_tiles],
+    )
     build_manifest_path = write_build_manifest(
         db_path,
         config_path=config_path,
         manifest_dir=manifest_dir,
         pool_build_id=pool_build_id,
+        build_status=build_status,
+        expected_tiles=len(expected_tiles),
         envelope=envelope,
         coverage=coverage,
         schema=schema,
@@ -307,6 +315,7 @@ def build_exact_union_prediction_pool(
         "tiles_completed_this_run": completed,
         "tiles_skipped_as_valid": skipped,
         "tiles_failed_this_run": failed,
+        "status": build_status,
     }
 
 
@@ -323,6 +332,14 @@ def audit_exact_union_prediction_pool(
     if not db_path.exists():
         raise FileNotFoundError(db_path)
 
+    expected_tile_ids = {
+        tile.tile_id for tile in make_sky_tiles(config)
+    }
+    ensure_exact_union_builds_status(
+        db_path,
+        expected_tile_ids=expected_tile_ids,
+    )
+
     with duckdb.connect(str(db_path), read_only=True) as con:
         tiles = con.execute(
             """
@@ -338,7 +355,7 @@ def audit_exact_union_prediction_pool(
         ).fetchdf()
         build_row = con.execute(
             """
-            SELECT envelope_sha256, bitmask_schema_version,
+            SELECT status, envelope_sha256, bitmask_schema_version,
                    bitmask_schema_sha256
             FROM exact_union_builds WHERE pool_build_id=?
             """,
@@ -346,6 +363,32 @@ def audit_exact_union_prediction_pool(
         ).fetchone()
     if build_row is None:
         errors.append("pool_build_id is missing from exact_union_builds")
+        build_status = None
+    else:
+        build_status = str(build_row[0])
+        if build_status != "completed":
+            errors.append(f"build_status={build_status}")
+
+    expected_tile_ids = {
+        tile.tile_id for tile in make_sky_tiles(config)
+    }
+    registered_tile_ids = set(tiles["tile_id"].astype(str))
+    completed_tile_ids = set(
+        tiles.loc[tiles["status"].eq("completed"), "tile_id"].astype(str)
+    )
+    missing_registered = sorted(expected_tile_ids - registered_tile_ids)
+    extra_registered = sorted(registered_tile_ids - expected_tile_ids)
+    incomplete_expected = sorted(expected_tile_ids - completed_tile_ids)
+    if missing_registered:
+        errors.append(
+            f"missing_registered_tiles={len(missing_registered)}"
+        )
+    if extra_registered:
+        errors.append(f"extra_registered_tiles={len(extra_registered)}")
+    if incomplete_expected:
+        errors.append(
+            f"incomplete_expected_tiles={len(incomplete_expected)}"
+        )
 
     tile_results: list[dict[str, Any]] = []
     for row in tiles.to_dict("records"):
@@ -464,10 +507,30 @@ def audit_exact_union_prediction_pool(
     build_manifest_path = manifest_dir / "build_manifest.json"
     if not build_manifest_path.exists():
         errors.append("build_manifest.json is missing")
+    else:
+        build_manifest = json.loads(
+            build_manifest_path.read_text(encoding="utf-8")
+        )
+        if build_manifest.get("status") != "completed":
+            errors.append(
+                "build_manifest_status="
+                f"{build_manifest.get('status')}"
+            )
+        manifest_counts = build_manifest.get("counts", {})
+        if int(manifest_counts.get("expected_tiles", -1)) != len(
+            expected_tile_ids
+        ):
+            errors.append("build_manifest_expected_tiles_mismatch")
+        if int(manifest_counts.get("completed_tiles", -1)) != len(
+            completed_tile_ids
+        ):
+            errors.append("build_manifest_completed_tiles_mismatch")
     return {
         "status": "passed" if not errors else "failed",
+        "build_status": build_status,
         "pool_build_id": pool_build_id,
         "database_path": str(db_path),
+        "expected_tiles": int(len(expected_tile_ids)),
         "registered_tiles": int(len(tiles)),
         "parquet_files": int(len(parquet_files)),
         "global_counts": global_counts,
@@ -703,6 +766,110 @@ def _tile_counts(
     return record
 
 
+def ensure_exact_union_builds_status(
+    db_path: Path,
+    *,
+    expected_tile_ids: Iterable[str] | None = None,
+) -> bool:
+    """Idempotently add ``exact_union_builds.status`` and backfill NULL rows.
+
+    Old databases created before the ``status`` column existed only trigger
+    ``CREATE TABLE IF NOT EXISTS`` today, so subsequent ``SELECT status``
+    paths fail with a DuckDB Binder error. This helper adds the column when
+    missing and fills NULL statuses from ``exact_union_tiles``.
+
+    When ``expected_tile_ids`` is provided, a build is marked ``completed``
+    only if the registered tile set equals that expected set and every tile
+    is completed; otherwise ``partial``. Without an expected set, NULL
+    statuses backfill to ``partial`` (never silently promote a build).
+
+    Returns ``True`` if a migration was applied.
+    """
+    if not db_path.exists():
+        return False
+    with duckdb.connect(str(db_path)) as con:
+        tables = {
+            row[0]
+            for row in con.execute(
+                "SELECT table_name FROM information_schema.tables"
+            ).fetchall()
+        }
+        if "exact_union_builds" not in tables:
+            return False
+        columns = [
+            row[0]
+            for row in con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'exact_union_builds'
+                ORDER BY ordinal_position
+                """
+            ).fetchall()
+        ]
+        migrated = False
+        if "status" not in columns:
+            con.execute(
+                "ALTER TABLE exact_union_builds ADD COLUMN status VARCHAR"
+            )
+            migrated = True
+
+        has_tiles = "exact_union_tiles" in tables
+        if expected_tile_ids is None:
+            con.execute(
+                """
+                UPDATE exact_union_builds
+                SET status = 'partial'
+                WHERE status IS NULL
+                """
+            )
+            return migrated
+
+        expected = {str(value) for value in expected_tile_ids}
+        pending = [
+            row[0]
+            for row in con.execute(
+                """
+                SELECT pool_build_id
+                FROM exact_union_builds
+                WHERE status IS NULL
+                """
+            ).fetchall()
+        ]
+        for pool_build_id in pending:
+            if not has_tiles:
+                status = "partial"
+            else:
+                tile_rows = con.execute(
+                    """
+                    SELECT tile_id, status
+                    FROM exact_union_tiles
+                    WHERE pool_build_id = ?
+                    """,
+                    [pool_build_id],
+                ).fetchall()
+                registered = {str(tile_id) for tile_id, _ in tile_rows}
+                completed = {
+                    str(tile_id)
+                    for tile_id, tile_status in tile_rows
+                    if str(tile_status) == "completed"
+                }
+                status = (
+                    "completed"
+                    if registered == expected and completed == expected
+                    else "partial"
+                )
+            con.execute(
+                """
+                UPDATE exact_union_builds
+                SET status = ?
+                WHERE pool_build_id = ?
+                """,
+                [status, pool_build_id],
+            )
+        return migrated
+
+
 def initialize_exact_union_database(
     db_path: Path,
     *,
@@ -712,6 +879,7 @@ def initialize_exact_union_database(
     coverage: Mapping[str, Any],
     schema: VariantMaskSchema,
     loci: Mapping[str, ExactLocus],
+    expected_tile_ids: Iterable[str] | None = None,
 ) -> None:
     with duckdb.connect(str(db_path)) as con:
         con.execute(
@@ -752,6 +920,11 @@ def initialize_exact_union_database(
             );
             """
         )
+    ensure_exact_union_builds_status(
+        db_path,
+        expected_tile_ids=expected_tile_ids,
+    )
+    with duckdb.connect(str(db_path)) as con:
         existing = con.execute(
             """
             SELECT envelope_sha256, bitmask_schema_sha256
@@ -768,7 +941,11 @@ def initialize_exact_union_database(
         now = datetime.now(UTC)
         con.execute(
             """
-            INSERT INTO exact_union_builds VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO exact_union_builds (
+                pool_build_id, status, config_path, envelope_sha256,
+                bitmask_schema_version, bitmask_schema_sha256,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (pool_build_id) DO UPDATE SET
                 updated_at = excluded.updated_at
             """,
@@ -1016,12 +1193,53 @@ def refresh_exact_union_views(db_path: Path, acquisition_dir: Path) -> None:
         )
 
 
+def finalize_exact_union_build_status(
+    db_path: Path,
+    *,
+    pool_build_id: str,
+    expected_tile_ids: Iterable[str],
+) -> str:
+    """Mark a build completed only for the exact configured terminal tile set."""
+    expected = {str(value) for value in expected_tile_ids}
+    with duckdb.connect(str(db_path)) as con:
+        rows = con.execute(
+            """
+            SELECT tile_id, status
+            FROM exact_union_tiles
+            WHERE pool_build_id=?
+            """,
+            [pool_build_id],
+        ).fetchall()
+        registered = {str(tile_id) for tile_id, _status in rows}
+        completed = {
+            str(tile_id)
+            for tile_id, status in rows
+            if str(status) == "completed"
+        }
+        status = (
+            "completed"
+            if registered == expected and completed == expected
+            else "partial"
+        )
+        con.execute(
+            """
+            UPDATE exact_union_builds
+            SET status=?, updated_at=?
+            WHERE pool_build_id=?
+            """,
+            [status, datetime.now(UTC), pool_build_id],
+        )
+    return status
+
+
 def write_build_manifest(
     db_path: Path,
     *,
     config_path: Path,
     manifest_dir: Path,
     pool_build_id: str,
+    build_status: str,
+    expected_tiles: int,
     envelope: Mapping[str, Any],
     coverage: Mapping[str, Any],
     schema: VariantMaskSchema,
@@ -1044,7 +1262,7 @@ def write_build_manifest(
         ).fetchone()
     manifest = {
         "pool_build_id": pool_build_id,
-        "status": "partial_or_completed",
+        "status": build_status,
         "config_path": str(config_path),
         "config_sha256": file_sha256(config_path),
         "acquisition_envelope": envelope,
@@ -1063,6 +1281,7 @@ def write_build_manifest(
             for variant, locus in loci.items()
         },
         "counts": {
+            "expected_tiles": int(expected_tiles),
             "completed_tiles": int(totals[0]),
             "failed_tiles": int(totals[1]),
             "acquired_pre_locus": int(totals[2]),

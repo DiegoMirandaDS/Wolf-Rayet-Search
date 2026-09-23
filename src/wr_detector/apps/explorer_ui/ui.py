@@ -40,6 +40,9 @@ STATUS_BADGES = {
 }
 
 SELECTED_MODEL_KEY = "selected_model_result_id"
+ACTIVE_MODEL_SELECTION_KEY = "active_model_result_ids"
+COMPARE_SELECTION_VERSION_KEY = "compare_selection_version"
+SELECTED_CANDIDATE_KEY = "selected_candidate_source_id"
 
 MODEL_SELECTION_COLUMNS = [
     "rank",
@@ -96,15 +99,75 @@ def status_badge(status: object) -> str:
     return f":gray-badge[{text}]"
 
 
+def candidate_disposition_badge(disposition: object) -> str:
+    value = str(disposition or "unknown")
+    labels = {
+        "known_wr": ("orange", "known WR"),
+        "catalogued_non_wr": ("blue", "catalogued non-WR"),
+        "emission_or_ambiguous": ("orange", "emission / ambiguous"),
+        "generic_or_uninformative": ("green", "generic"),
+        "no_exact_match": ("gray", "no SIMBAD match"),
+        "ambiguous_positional_match": ("red", "ambiguous position"),
+    }
+    color, label = labels.get(
+        value,
+        ("gray", value.replace("_", " ")),
+    )
+    return f":{color}-badge[{label}]"
+
+
 def active_model(results: pd.DataFrame) -> pd.Series:
     """Return the synchronized active model, repairing stale run state."""
     ranked = rank_models(with_short_labels(results), metric="ranking_score")
     options = ranked["result_id"].astype(str).tolist()
+    selection = active_model_selection(ranked)
+    available = selection or options
     current = st.session_state.get(SELECTED_MODEL_KEY)
-    if current not in options:
-        current = options[0]
+    if current not in available:
+        current = available[0]
         st.session_state[SELECTED_MODEL_KEY] = current
     return ranked[ranked["result_id"].astype(str).eq(str(current))].iloc[0]
+
+
+def active_model_selection(results: pd.DataFrame) -> list[str]:
+    """Return the valid ordered active-model selection for the current run."""
+    available = set(results["result_id"].astype(str))
+    stored = st.session_state.get(ACTIVE_MODEL_SELECTION_KEY, [])
+    if not isinstance(stored, (list, tuple)):
+        stored = []
+    valid = list(
+        dict.fromkeys(
+            str(result_id)
+            for result_id in stored
+            if str(result_id) in available
+        )
+    )
+    if valid:
+        if list(stored) != valid:
+            st.session_state[ACTIVE_MODEL_SELECTION_KEY] = valid
+        return valid
+    st.session_state.pop(ACTIVE_MODEL_SELECTION_KEY, None)
+    return []
+
+
+def activate_model_selection(result_ids: list[str]) -> None:
+    """Persist a ranked model selection and make its first model active."""
+    selection = list(dict.fromkeys(str(result_id) for result_id in result_ids))
+    if not selection:
+        return
+    st.session_state[ACTIVE_MODEL_SELECTION_KEY] = selection
+    st.session_state[SELECTED_MODEL_KEY] = selection[0]
+
+
+def deactivate_model_selection(results: pd.DataFrame) -> None:
+    """Restore unrestricted model selection with the best ranked model active."""
+    st.session_state.pop(ACTIVE_MODEL_SELECTION_KEY, None)
+    ranked = rank_models(with_short_labels(results), metric="ranking_score")
+    if not ranked.empty:
+        st.session_state[SELECTED_MODEL_KEY] = str(ranked.iloc[0]["result_id"])
+    st.session_state[COMPARE_SELECTION_VERSION_KEY] = (
+        int(st.session_state.get(COMPARE_SELECTION_VERSION_KEY, 0)) + 1
+    )
 
 
 def active_model_control(
@@ -112,15 +175,63 @@ def active_model_control(
     *,
     widget_key: str,
 ) -> pd.Series:
-    """Show the active model and a compact two-step picker."""
+    """Show the active model, selection navigation and a compact picker."""
     selected = active_model(results)
-    st.markdown(
-        f"**{selected['short_label']}**  \n"
-        f"{status_badge(selected.get('selection_status'))}"
-    )
-    with st.popover("Switch model", icon=":material/swap_horiz:"):
-        _active_model_picker(results, selected=selected, widget_key=widget_key)
+    selection = active_model_selection(results)
+    current_id = str(selected["result_id"])
+    position = selection.index(current_id) if selection else 0
+
+    if selection:
+        previous, summary, following = st.columns([0.55, 4, 0.55], gap="small")
+        previous_clicked = previous.button(
+            "←",
+            key=f"{widget_key}_previous",
+            help="Previous model in the active selection",
+            disabled=len(selection) < 2,
+            width="stretch",
+        )
+        next_clicked = following.button(
+            "→",
+            key=f"{widget_key}_next",
+            help="Next model in the active selection",
+            disabled=len(selection) < 2,
+            width="stretch",
+        )
+        if previous_clicked or next_clicked:
+            offset = -1 if previous_clicked else 1
+            target = selection[(position + offset) % len(selection)]
+            st.session_state[SELECTED_MODEL_KEY] = target
+            st.session_state[f"{widget_key}_selection_result"] = target
+            st.rerun()
+        with summary:
+            _active_model_summary(
+                selected,
+                selection_position=(position + 1, len(selection)),
+            )
+            with st.popover("Switch model", icon=":material/swap_horiz:"):
+                _active_selection_picker(
+                    results,
+                    selected=selected,
+                    selection=selection,
+                    widget_key=widget_key,
+                )
+    else:
+        _active_model_summary(selected)
+        with st.popover("Switch model", icon=":material/swap_horiz:"):
+            _active_model_picker(results, selected=selected, widget_key=widget_key)
     return selected
+
+
+def _active_model_summary(
+    selected: pd.Series,
+    *,
+    selection_position: tuple[int, int] | None = None,
+) -> None:
+    badges = status_badge(selected.get("selection_status"))
+    if selection_position is not None:
+        position, total = selection_position
+        badges += f"  :blue-badge[active selection {position}/{total}]"
+    st.markdown(f"**{selected['short_label']}**  \n{badges}")
 
 
 def active_model_context(
@@ -187,6 +298,50 @@ def _active_model_picker(
         width="stretch",
     ):
         st.session_state[SELECTED_MODEL_KEY] = chosen
+        st.rerun()
+
+
+def _active_selection_picker(
+    results: pd.DataFrame,
+    *,
+    selected: pd.Series,
+    selection: list[str],
+    widget_key: str,
+) -> None:
+    candidates = with_short_labels(results)
+    candidates = candidates[candidates["result_id"].astype(str).isin(selection)].copy()
+    order = {result_id: index for index, result_id in enumerate(selection)}
+    candidates["_selection_order"] = candidates["result_id"].astype(str).map(order)
+    candidates = candidates.sort_values("_selection_order")
+    labels = {
+        str(row.result_id): (
+            f"{row.short_label} · R@100 "
+            f"{fmt_pct(getattr(row, 'holdout_recall_at_100', None))} · "
+            f"AP {fmt(getattr(row, 'holdout_average_precision', None))}"
+        )
+        for row in candidates.itertuples(index=False)
+    }
+    chosen = _filtered_selectbox(
+        "Selected model",
+        selection,
+        default=str(selected["result_id"]),
+        key=f"{widget_key}_selection_result",
+        format_func=lambda value: labels.get(value, value),
+    )
+    if st.button(
+        "Use as active model",
+        key=f"{widget_key}_selection_apply",
+        type="primary",
+        width="stretch",
+    ):
+        st.session_state[SELECTED_MODEL_KEY] = chosen
+        st.rerun()
+    if st.button(
+        "Deactivate selection",
+        key=f"{widget_key}_selection_deactivate",
+        width="stretch",
+    ):
+        deactivate_model_selection(results)
         st.rerun()
 
 
